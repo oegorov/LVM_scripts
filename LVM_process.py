@@ -51,7 +51,8 @@ log.addHandler(ch)
 # ======== Setup =========
 # ========================
 red_data_version = '1.0.3'
-drp_version = '0.1.2dev'
+drp_version = '1.0.4dev'
+# os.environ['LVMDRP_VERSION'] = drp_version
 agcam_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'agcam', 'lco')
 raw_data_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'lvm', 'lco')
 drp_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux', red_data_version)
@@ -102,13 +103,13 @@ def LVM_process(config_filename=None, output_dir=None):
 
     # === Step 3 - reduce all exposures listed in config
     if config['steps'].get('reduction'):
-        status = do_quick_reduction(config)
+        status = do_reduction(config)
         if not status:
             log.error("Critical errors occurred. Exit.")
             return
         log.info("Reduction complete")
 
-        copy_reduced_data(config, output_dir=output_dir)
+        # copy_reduced_data(config, output_dir=output_dir)
 
     else:
         log.info("Skip reduction step")
@@ -486,12 +487,12 @@ def fit_spectra(rsshdu, wrange, selection=None, lines=None, fix_ratios=None, flu
     if sky_only:
         flux_all = rsshdu["SKY"].data[selection]
     else:
-        flux_all = rsshdu["FLUX"].data[selection]#/texp
+        flux_all = rsshdu["FLUX"].data[selection]
         if include_sky or partial_sky:
-            flux_all += (rsshdu["SKY"].data[selection])#/texp)
+            flux_all += (rsshdu["SKY"].data[selection])
     lsf_all = rsshdu['LSF'].data[selection]
     if sky_only:
-        errors_all = rsshdu['SKY_IVAR'].data[selection]#/texp
+        errors_all = rsshdu['SKY_IVAR'].data[selection]
     else:
         errors_all = rsshdu['IVAR'].data[selection]
 
@@ -882,31 +883,12 @@ def quickmap(mjd: int, expnum: int, do_astrom=False, wrange=(6558,6565), crange=
     rss.close()
 
 
-def reduce_parallel(exp_pairs):
-    exp, weights = exp_pairs
-    try:
-        if weights is not None:
-            add_weights = f"--sky-weights {weights[0]} {weights[1]}"
-        else:
-            add_weights = ""
-        os.system(f"drp quick-reduction -fe {exp} {add_weights}")# >/dev/null 2>&1")
-        # os.system(f"drp run --no-sci --with-cals -m 60291 -e {exp}")
-    except Exception as e:
-        log.error(f"Something wrong with quick data reduction: {e}")
-        return False
-    return True
-
-
-def metadata_parallel(mjd):
-    try:
-        os.system(f"drp metadata regenerate -m {mjd}")
-    except Exception as e:
-        log.error(f"Something wrong with metadata regeneration: {e}")
-        return False
-    return True
-
-
 def parse_config(config_filename):
+    """
+    Reads TOML config file
+    :param config_filename: full path to the config file
+    :return: dictionary with keywords controlling the data processing
+    """
     try:
         with open(config_filename, "rb") as f:
             config = tomllib.load(f)
@@ -921,6 +903,11 @@ def parse_config(config_filename):
 
 
 def download_from_sas(config):
+    """
+    Downloads requested files (raw frames/agcam images/reduced spectra) from SAS
+    :param config: dictionary with keywords controlling the data processing
+    :return: status (success or failure)
+    """
     cams = ['b1', 'b2', 'b3', 'r1', 'r2', 'r3', 'z1', 'z2', 'z3']
     rsync = RsyncAccess(verbose=True)
     # sets a remote mode to the real SAS
@@ -1099,7 +1086,25 @@ def download_from_sas(config):
     return True
 
 
+def metadata_parallel(mjd):
+    """
+    Aux. function to launch metadata regeneration in parallel threads
+    :param mjd: MJD to analyse
+    :return: status (success or failure)
+    """
+    try:
+        os.system(f"drp metadata regenerate -m {mjd}")
+    except Exception as e:
+        log.error(f"Something wrong with metadata regeneration: {e}")
+        return False
+    return True
+
 def regenerate_metadata(config):
+    """
+    Regenerates metadata for all MJDs in the current reduction
+    :param config: dictionary with keywords controlling the data processing
+    :return: status (success or failure)
+    """
     mjds = []
     for cur_obj in config['object']:
         for cur_pointing in cur_obj['pointing']:
@@ -1122,145 +1127,35 @@ def regenerate_metadata(config):
         gc.collect()
     if not np.all(statuses):
         return False
-
     return True
 
 
-def do_sky_correction(config, w_dir=None):
-    if w_dir is None or not os.path.exists(w_dir):
-        log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
+def reduce_parallel(exp_pairs):
+    """
+    Aux. function to launch data reduction in parallel threads
+    :param exp_pairs: tuple with exp.id, mjd and sky weights
+    :return: status (success or failure)
+    """
+    exp, mjd, weights = exp_pairs
+    try:
+        if weights is not None:
+            add_weights = f"--sky-weights {weights[0]} {weights[1]}"
+        else:
+            add_weights = ""
+        os.system(f"drp run -m {mjd} -e {exp} {add_weights}")# >/dev/null 2>&1")
+        # os.system(f"drp run --no-sci --with-cals -m 60291 -e {exp}")
+    except Exception as e:
+        log.error(f"Something wrong with data reduction: {e}")
         return False
-
-    statuses = []
-    files = []
-    for cur_obj in config['object']:
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
-        if not os.path.exists(cur_wdir):
-            log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
-            statuses.append(False)
-            continue
-        for cur_pointing in cur_obj['pointing']:
-            for data in cur_pointing['data']:
-                if isinstance(data['exp'], int):
-                    exps = [data['exp']]
-                else:
-                    exps = data['exp']
-                for exp in exps:
-                    cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'lvmCFrame-{exp:08d}.fits')
-                    if not os.path.exists(cur_fname):
-                        log.warning(f"Can't find {cur_fname}")
-                        continue
-                    files.append(cur_fname)
-
-    for ind_f, cur_f in tqdm(enumerate(files), total=len(files), ascii=True, desc='Spectra done:'):
-        rss_orig = fits.open(cur_f)
-        if not rss_orig[0].header.get('FLUXCAL'):
-            log.error(f"Missing flux calibration for file {cur_f}. Skip it.")
-            rss_orig.close()
-            statuses.append(False)
-            continue
-        rss = deepcopy(rss_orig)
-        rss['FLUX'].data[rss['MASK'] == 1] = np.nan
-        rss['IVAR'].data[rss['MASK'] == 1] = np.nan
-        rss['SKY'].data[rss['MASK'] == 1] = np.nan
-        tab = Table(rss['SLITMAP'].data)
-        sci = np.flatnonzero(tab['targettype'] == 'science')
-        # rss["FLUX"].data += rss['SKY'].data
-
-        flux = quickflux(rss, [5572, 5582], crange=[5545, 5565, 5585, 5600], selection=sci, include_sky=True)
-
-        rss["FLUX"].data = rss['SKY'].data
-        flux_sky = quickflux(rss, [5572, 5582], crange=[5545, 5565, 5585, 5600], selection=sci, include_sky=False)
-
-        # flux, _, _, cont = fit_spectra(rss, [5545, 5600], selection=sci, mean_bounds=(-2,2),
-        #                                consider_as_comp=[0],do_helio_corr=False,
-        #                                lines=[5577.], velocity=0)
-        #
-        # flux_sky, _, _, cont_sky = fit_spectra(rss, [5545, 5600], selection=sci, mean_bounds=(-2, 2),
-        #                                        consider_as_comp=[0], do_helio_corr=False,
-        #                                        lines=[5577.], velocity=0)
-        rss.close()
-        cur_header = rss_orig['FLUX'].header
-        cur_data = rss_orig['FLUX'].data+rss_orig['SKY'].data
-        cur_data[sci] -= (rss_orig['SKY'].data[sci] * (flux/flux_sky)[:, None])
-        rss_orig.append(fits.ImageHDU(data=cur_data, header=cur_header, name='FLUX_SKYCORR'))
-        rss_orig.writeto(cur_f.split(".fits")[0]+'_test.fits', overwrite=True)
-        statuses.append(True)
+    return True
 
 
-def do_coadd_spectra(config, w_dir=None):
-    if w_dir is None or not os.path.exists(w_dir):
-        log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
-        return False
-
-    statuses = []
-    for cur_obj in config['object']:
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
-        if not os.path.exists(cur_wdir):
-            log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
-            statuses.append(False)
-            continue
-
-        for ind_pointing, cur_pointing in tqdm(enumerate(cur_obj['pointing']), total=len(cur_obj['pointing']),
-                                               ascii=True, desc='Pointings done:'):
-            files = []
-            corrections = []
-            if cur_pointing['skip'].get('combine_spec'):
-                log.info(f"Skip coadding spectra for object = {cur_obj['name']}, pointing = {cur_pointing['name']}")
-                continue
-            for data in cur_pointing['data']:
-                if isinstance(data['exp'], int):
-                    exps = [data['exp']]
-                else:
-                    exps = data['exp']
-                if not data.get('flux_correction'):
-                    corrections.extend([1.]*len(exps))
-                else:
-                    if isinstance(data['flux_correction'], float) or isinstance(data['flux_correction'], int):
-                        corrections.append(data['flux_correction'])
-                    else:
-                        corrections.extend(data['flux_correction'])
-                for exp in exps:
-                    if config['imaging']['include_sky']:
-                        cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'lvmCFrame-{exp:08d}.fits')
-                    else:
-                        cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'lvmSFrame-{exp:08d}.fits')
-                    if not os.path.exists(cur_fname):
-                        log.warning(f"Can't find {cur_fname}")
-                        continue
-                    files.append(cur_fname)
-
-            if len(files) < 2:
-                log.warning(f"Nothing to coadd for object = {cur_obj['name']}, pointing = {cur_pointing['name']}")
-                continue
-
-            fout = os.path.join(cur_wdir, cur_pointing['name'], f'combined_spectrum_{ind_pointing:02d}.fits')
-            with fits.open(files[0]) as hdu_ref:
-                for ext in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR']:
-                    hdu_ref[ext].data[hdu_ref['MASK'] == 1] = np.nan
-                    hdu_ref[ext].data = np.expand_dims(hdu_ref[ext].data, axis=0) * corrections[0]
-                for f_ind, f in enumerate(files[1:]):
-                    with fits.open(f) as hdu:
-                        for ext in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR']:
-                            hdu[ext].data[hdu['MASK'] == 1] = np.nan
-                            hdu[ext].data = np.expand_dims(hdu[ext].data, axis=0) * corrections[f_ind+1] / hdu[0].header['EXPTIME'] * hdu_ref[0].header['EXPTIME']
-                            hdu_ref[ext].data = np.vstack([hdu_ref[ext].data, hdu[ext].data])
-                for ext in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR']:
-                    if "IVAR" in ext:
-                        hdu_ref[ext].data = np.sqrt(np.nansum(hdu_ref[ext].data**2, axis=0))/np.sum(np.isfinite(hdu_ref[ext].data),axis=0)
-                    else:
-                        hdu_ref[ext].data = sigma_clip(hdu_ref[ext].data, sigma=1.3, axis=0, masked=False)
-                        hdu_ref[ext].data = np.nanmean(hdu_ref[ext].data, axis=0)
-                hdu_ref.writeto(fout, overwrite=True)
-                statuses.append(True)
-
-    if not np.all(statuses):
-        return False
-    else:
-        return True
-
-
-def do_quick_reduction(config):
+def do_reduction(config):
+    """
+    Launch data reduction for selected exposures according to config file
+    :param config: dictionary with keywords defining data processing
+    :return: status (success or failure)
+    """
     exps = []
     mjds = []
     for cur_obj in config['object']:
@@ -1276,17 +1171,6 @@ def do_quick_reduction(config):
                 mjds.extend([data['mjd']]*len(exp))
                 exps.extend(exp)
 
-                # # Remove old drp products since they can break new reduction
-                # if config.get('drp_old'):
-                #     for exp in exps:
-                #         files_check = glob.glob(os.path.join(drp_results_dir, str(data['mjd']), "ancillary", f"*{exp}.fits"))
-                #         for f in files_check:
-                #             if os.path.isfile(f):
-                #                 os.remove(f)
-                #         files_check = glob.glob(os.path.join(drp_results_dir, str(data['mjd']), f"*{exp}.fits"))
-                #         for f in files_check:
-                #             if os.path.isfile(f):
-                #                 os.remove(f)
     mjds = np.array(mjds)
     exps, exp_ids = np.unique(exps, return_index=True)
     mjds = mjds[exp_ids]
@@ -1327,12 +1211,12 @@ def do_quick_reduction(config):
         if weights is not None:
             log.info(f"For exp={exp} assume weights=({weights_e}, {weights_w})")
 
-        exp_pairs.append((exp, weights))
+        exp_pairs.append((exp, mjds[exp_id], weights))
 
     statuses = []
     if not config['reduction'].get('reduce_parallel'):
         log.info(f"Start reduction of {len(exp_pairs)} exposures")
-        for exp in tqdm(exp_pairs, ascii=True, desc="Quick data reduction", total=len(exp_pairs)):
+        for exp in tqdm(exp_pairs, ascii=True, desc="Data reduction", total=len(exp_pairs)):
             status = reduce_parallel(exp)
             if not status:
                 log.error(f"Something went wrong with mjd={str(data['mjd'])}, exposure={exp[0]}")
@@ -1343,7 +1227,7 @@ def do_quick_reduction(config):
         with mp.Pool(processes=procs) as pool:
 
             for status in tqdm(pool.imap_unordered(reduce_parallel, exp_pairs),
-                               ascii=True, desc="Quick data reduction",
+                               ascii=True, desc="Data reduction",
                                total=len(exp_pairs), ):
                 statuses.append(status)
             pool.close()
@@ -1431,6 +1315,77 @@ def copy_reduced_data(config, output_dir=None):
                     os.remove(fname)
                 shutil.copy(sf, curdir)
 
+
+def do_coadd_spectra(config, w_dir=None):
+    if w_dir is None or not os.path.exists(w_dir):
+        log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
+        return False
+
+    statuses = []
+    for cur_obj in config['object']:
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        if not os.path.exists(cur_wdir):
+            log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
+            statuses.append(False)
+            continue
+
+        for ind_pointing, cur_pointing in tqdm(enumerate(cur_obj['pointing']), total=len(cur_obj['pointing']),
+                                               ascii=True, desc='Pointings done:'):
+            files = []
+            corrections = []
+            if cur_pointing['skip'].get('combine_spec'):
+                log.info(f"Skip coadding spectra for object = {cur_obj['name']}, pointing = {cur_pointing['name']}")
+                continue
+            for data in cur_pointing['data']:
+                if isinstance(data['exp'], int):
+                    exps = [data['exp']]
+                else:
+                    exps = data['exp']
+                if not data.get('flux_correction'):
+                    corrections.extend([1.]*len(exps))
+                else:
+                    if isinstance(data['flux_correction'], float) or isinstance(data['flux_correction'], int):
+                        corrections.append(data['flux_correction'])
+                    else:
+                        corrections.extend(data['flux_correction'])
+                for exp in exps:
+                    if config['imaging']['include_sky']:
+                        cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'lvmCFrame-{exp:08d}.fits')
+                    else:
+                        cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'lvmSFrame-{exp:08d}.fits')
+                    if not os.path.exists(cur_fname):
+                        log.warning(f"Can't find {cur_fname}")
+                        continue
+                    files.append(cur_fname)
+
+            if len(files) < 2:
+                log.warning(f"Nothing to coadd for object = {cur_obj['name']}, pointing = {cur_pointing['name']}")
+                continue
+
+            fout = os.path.join(cur_wdir, cur_pointing['name'], f'combined_spectrum_{ind_pointing:02d}.fits')
+            with fits.open(files[0]) as hdu_ref:
+                for ext in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR']:
+                    hdu_ref[ext].data[hdu_ref['MASK'] == 1] = np.nan
+                    hdu_ref[ext].data = np.expand_dims(hdu_ref[ext].data, axis=0) * corrections[0]
+                for f_ind, f in enumerate(files[1:]):
+                    with fits.open(f) as hdu:
+                        for ext in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR']:
+                            hdu[ext].data[hdu['MASK'] == 1] = np.nan
+                            hdu[ext].data = np.expand_dims(hdu[ext].data, axis=0) * corrections[f_ind+1] / hdu[0].header['EXPTIME'] * hdu_ref[0].header['EXPTIME']
+                            hdu_ref[ext].data = np.vstack([hdu_ref[ext].data, hdu[ext].data])
+                for ext in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR']:
+                    if "IVAR" in ext:
+                        hdu_ref[ext].data = np.sqrt(np.nansum(hdu_ref[ext].data**2, axis=0))/np.sum(np.isfinite(hdu_ref[ext].data),axis=0)
+                    else:
+                        hdu_ref[ext].data = sigma_clip(hdu_ref[ext].data, sigma=1.3, axis=0, masked=False)
+                        hdu_ref[ext].data = np.nanmean(hdu_ref[ext].data, axis=0)
+                hdu_ref.writeto(fout, overwrite=True)
+                statuses.append(True)
+
+    if not np.all(statuses):
+        return False
+    else:
+        return True
 
 def quickmap_parallel(data, wl_range=None, cont_range=None, output_dir=None, suffix=None, include_sky=False,
                       skip_bad_fibers=False):
@@ -3434,86 +3389,149 @@ def mask_sky_at_bright_lines(sky_spec, mask=None, wave=None, vel=0):
 # ===========================================================================================
 # ======== Auxiliary functions (for testing etc., not used in general processing) ===========
 # ===========================================================================================
-
-def check_pixel_shift(data):
-    from lvmdrp.functions import run_calseq as calseq
-    from lvmdrp.utils import metadata as md
-    mjd, first_exp, source_dir, messup = data
-    imagetyp = "object"
-    expnums = sorted(md.get_frames_metadata(mjd=mjd).query(
-        "imagetyp == @imagetyp and not (ldls|quartz|argon|neon|hgne|xenon)").expnum.unique())
-
-    if messup:
-        calseq.messup_frame(mjd, expnum=expnums[1], shifts=[2345], spec="2", shift_size=-2, undo_messup=False)
-
-    try:
-        calseq.fix_raw_pixel_shifts(mjd=mjd, expnums=expnums, ref_expnums=first_exp, specs="123",
-                                    create_mask_always=False, dry_run=True, display_plots=False,
-                                    wave_widths=0.6*5000, y_widths=20, flat_spikes=21, threshold_spikes=0.1)
-
-        f = glob.glob(os.path.join(source_dir, '*pixel_shifts.png'))
-
-        if len(f) > 0:
-            for sf in f:
-                shutil.copy(sf, '/home/egorov/Science/LVM/test_pixshift/')
-            return 1
-        return 0
-    except:
-        return -1
-
-def do_test_pix_shift(config):
-    mjds = []
-    first_exp = []
-    source_dirs = []
-    for cur_obj in config['object']:
-        for cur_pointing in cur_obj['pointing']:
-            for data in cur_pointing['data']:
-                if isinstance(data['exp'], int):
-                    exp = [data['exp']]
-                else:
-                    exp = data['exp']
-                if data['mjd'] not in mjds:
-                    sdir = os.path.join("/data/LVM/sdsswork/data/lvm/lco/", str(data['mjd']))
-                    if os.path.exists(sdir):
-                        f = glob.glob(os.path.join(sdir, "*.fits.gz"))
-                        if len(f) < 1:
-                            continue
-                    mjds.append(data['mjd'])
-                    first_exp.append(exp[0])
-                    source_dirs.append(os.path.join(drp_results_dir, '11111', str(data['mjd']), 'ancillary', 'qa'))
-
-    mjds = np.array(mjds)
-    first_exp = np.array(first_exp)
-    source_dirs = np.array(source_dirs)
-    if len(mjds) == 0:
-        log.warning("No mjds provided")
-        return False
-
-    procs = np.nanmin([config['nprocs'], len(mjds)])
-    log.info(f"Start testing of {len(mjds)} mjds in {procs} parallel processes")
-    statuses = []
-    # status = check_pixel_shift((mjds[6], first_exp[6], source_dirs[6]))
-    #
-    # return status
-    messup = [True]
-    messup.extend([False]*(len(mjds)-1))
-    messup = np.array(messup)
-    with mp.Pool(processes=procs) as pool:
-
-        for status in tqdm(pool.imap_unordered(check_pixel_shift, zip(mjds, first_exp, source_dirs, messup)),
-                           ascii=True, desc="Test pixel shifts",
-                           total=len(mjds), ):
-            statuses.append(status)
-        pool.close()
-        pool.join()
-        gc.collect()
-    statuses = np.array(statuses)
-    npxshifts = np.sum(statuses == 1)
-    log.info(f"{npxshifts} are detected in {len(mjds)} mjds")
-    if not np.all(statuses >= 0):
-        return False
-
-    return True
+#
+# def check_pixel_shift(data):
+#     from lvmdrp.functions import run_calseq as calseq
+#     from lvmdrp.utils import metadata as md
+#     mjd, first_exp, source_dir, messup = data
+#     imagetyp = "object"
+#     expnums = sorted(md.get_frames_metadata(mjd=mjd).query(
+#         "imagetyp == @imagetyp and not (ldls|quartz|argon|neon|hgne|xenon)").expnum.unique())
+#
+#     if messup:
+#         calseq.messup_frame(mjd, expnum=expnums[1], shifts=[2345], spec="2", shift_size=-2, undo_messup=False)
+#
+#     try:
+#         calseq.fix_raw_pixel_shifts(mjd=mjd, expnums=expnums, ref_expnums=first_exp, specs="123",
+#                                     create_mask_always=False, dry_run=True, display_plots=False,
+#                                     wave_widths=0.6*5000, y_widths=20, flat_spikes=21, threshold_spikes=0.1)
+#
+#         f = glob.glob(os.path.join(source_dir, '*pixel_shifts.png'))
+#
+#         if len(f) > 0:
+#             for sf in f:
+#                 shutil.copy(sf, '/home/egorov/Science/LVM/test_pixshift/')
+#             return 1
+#         return 0
+#     except:
+#         return -1
+#
+# def do_test_pix_shift(config):
+#     mjds = []
+#     first_exp = []
+#     source_dirs = []
+#     for cur_obj in config['object']:
+#         for cur_pointing in cur_obj['pointing']:
+#             for data in cur_pointing['data']:
+#                 if isinstance(data['exp'], int):
+#                     exp = [data['exp']]
+#                 else:
+#                     exp = data['exp']
+#                 if data['mjd'] not in mjds:
+#                     sdir = os.path.join("/data/LVM/sdsswork/data/lvm/lco/", str(data['mjd']))
+#                     if os.path.exists(sdir):
+#                         f = glob.glob(os.path.join(sdir, "*.fits.gz"))
+#                         if len(f) < 1:
+#                             continue
+#                     mjds.append(data['mjd'])
+#                     first_exp.append(exp[0])
+#                     source_dirs.append(os.path.join(drp_results_dir, '11111', str(data['mjd']), 'ancillary', 'qa'))
+#
+#     mjds = np.array(mjds)
+#     first_exp = np.array(first_exp)
+#     source_dirs = np.array(source_dirs)
+#     if len(mjds) == 0:
+#         log.warning("No mjds provided")
+#         return False
+#
+#     procs = np.nanmin([config['nprocs'], len(mjds)])
+#     log.info(f"Start testing of {len(mjds)} mjds in {procs} parallel processes")
+#     statuses = []
+#     # status = check_pixel_shift((mjds[6], first_exp[6], source_dirs[6]))
+#     #
+#     # return status
+#     messup = [True]
+#     messup.extend([False]*(len(mjds)-1))
+#     messup = np.array(messup)
+#     with mp.Pool(processes=procs) as pool:
+#
+#         for status in tqdm(pool.imap_unordered(check_pixel_shift, zip(mjds, first_exp, source_dirs, messup)),
+#                            ascii=True, desc="Test pixel shifts",
+#                            total=len(mjds), ):
+#             statuses.append(status)
+#         pool.close()
+#         pool.join()
+#         gc.collect()
+#     statuses = np.array(statuses)
+#     npxshifts = np.sum(statuses == 1)
+#     log.info(f"{npxshifts} are detected in {len(mjds)} mjds")
+#     if not np.all(statuses >= 0):
+#         return False
+#
+#     return True
+#
+#
+# def do_sky_correction(config, w_dir=None):
+#     if w_dir is None or not os.path.exists(w_dir):
+#         log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
+#         return False
+#
+#     statuses = []
+#     files = []
+#     for cur_obj in config['object']:
+#         cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+#         if not os.path.exists(cur_wdir):
+#             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
+#             statuses.append(False)
+#             continue
+#         for cur_pointing in cur_obj['pointing']:
+#             for data in cur_pointing['data']:
+#                 if isinstance(data['exp'], int):
+#                     exps = [data['exp']]
+#                 else:
+#                     exps = data['exp']
+#                 for exp in exps:
+#                     cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'lvmCFrame-{exp:08d}.fits')
+#                     if not os.path.exists(cur_fname):
+#                         log.warning(f"Can't find {cur_fname}")
+#                         continue
+#                     files.append(cur_fname)
+#
+#     for ind_f, cur_f in tqdm(enumerate(files), total=len(files), ascii=True, desc='Spectra done:'):
+#         rss_orig = fits.open(cur_f)
+#         if not rss_orig[0].header.get('FLUXCAL'):
+#             log.error(f"Missing flux calibration for file {cur_f}. Skip it.")
+#             rss_orig.close()
+#             statuses.append(False)
+#             continue
+#         rss = deepcopy(rss_orig)
+#         rss['FLUX'].data[rss['MASK'] == 1] = np.nan
+#         rss['IVAR'].data[rss['MASK'] == 1] = np.nan
+#         rss['SKY'].data[rss['MASK'] == 1] = np.nan
+#         tab = Table(rss['SLITMAP'].data)
+#         sci = np.flatnonzero(tab['targettype'] == 'science')
+#         # rss["FLUX"].data += rss['SKY'].data
+#
+#         flux = quickflux(rss, [5572, 5582], crange=[5545, 5565, 5585, 5600], selection=sci, include_sky=True)
+#
+#         rss["FLUX"].data = rss['SKY'].data
+#         flux_sky = quickflux(rss, [5572, 5582], crange=[5545, 5565, 5585, 5600], selection=sci, include_sky=False)
+#
+#         # flux, _, _, cont = fit_spectra(rss, [5545, 5600], selection=sci, mean_bounds=(-2,2),
+#         #                                consider_as_comp=[0],do_helio_corr=False,
+#         #                                lines=[5577.], velocity=0)
+#         #
+#         # flux_sky, _, _, cont_sky = fit_spectra(rss, [5545, 5600], selection=sci, mean_bounds=(-2, 2),
+#         #                                        consider_as_comp=[0], do_helio_corr=False,
+#         #                                        lines=[5577.], velocity=0)
+#         rss.close()
+#         cur_header = rss_orig['FLUX'].header
+#         cur_data = rss_orig['FLUX'].data+rss_orig['SKY'].data
+#         cur_data[sci] -= (rss_orig['SKY'].data[sci] * (flux/flux_sky)[:, None])
+#         rss_orig.append(fits.ImageHDU(data=cur_data, header=cur_header, name='FLUX_SKYCORR'))
+#         rss_orig.writeto(cur_f.split(".fits")[0]+'_test.fits', overwrite=True)
+#         statuses.append(True)
+#
 
 # =========================================================
 # ======== Run LVM_processing from command line ===========
