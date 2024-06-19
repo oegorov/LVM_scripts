@@ -41,6 +41,15 @@ warnings.simplefilter('ignore', UserWarning)
 warnings.simplefilter('ignore', AstropyWarning)
 warnings.simplefilter('ignore', AstropyUserWarning)
 
+log = logging.getLogger(name='LVM-process')
+log.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+log.addHandler(ch)
+
+# ========================
+# ======== Setup =========
+# ========================
 red_data_version = '1.0.3'
 drp_version = '0.1.2dev'
 agcam_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'agcam', 'lco')
@@ -50,11 +59,193 @@ drp_results_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 's
 server_group_id = 10699  # ID of the group on the server to run 'chgrp' on all new/downloaded files. Skipped if None
 
 
-log = logging.getLogger(name='LVM-process')
-log.setLevel(logging.DEBUG)
-ch = logging.StreamHandler()
-ch.setLevel(logging.DEBUG)
-log.addHandler(ch)
+# ================================================
+# ======== Main functions for data processing ====
+# ================================================
+def LVM_process(config_filename=None, output_dir=None):
+    """
+    Main function regulating all the LVM processing steps
+    :param config_filename: path to TOML config file
+    :param output_dir: output directory for all processed files
+    """
+    if not os.path.exists(config_filename):
+        log.error("Config file is not found!")
+        return
+    config = parse_config(config_filename)
+    if not config:
+        log.error("Critical errors occurred. Exit.")
+        return
+
+    if len(config['object']) == 0:
+        log.error("Can't find any object. Nothing to process.")
+        return
+
+    # === Step 1 - download all raw files listed in config from SAS. After that - regenerates metadata
+    if config['steps'].get('download'):
+        status = download_from_sas(config)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+        log.info("Downloading from SAS complete")
+
+    else:
+        log.info("Skip download step")
+
+    # === Step 2 - Regenerate metadata (necessary after downloading new files or update of drp)
+    if config['steps'].get('update_metadata'):
+        status = regenerate_metadata(config)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+    else:
+        log.info("Skip updating metadata step")
+
+    # === Step 3 - reduce all exposures listed in config
+    if config['steps'].get('reduction'):
+        status = do_quick_reduction(config)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+        log.info("Reduction complete")
+
+        copy_reduced_data(config, output_dir=output_dir)
+
+    else:
+        log.info("Skip reduction step")
+
+    # === Step 4.1 - Optional step checking the noise level in the spectra (to evaluate potential correction in abs.cal)
+    if config['steps'].get('check_noise_level'):
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
+        status = check_noise_level(config, w_dir=cur_wdir)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+
+    # === Step 4.2 - Optional step - combine spectra with sigma-clipping
+    if config['steps'].get('coadd_spectra'):
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
+        status = do_coadd_spectra(config, w_dir=cur_wdir)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+        log.info("Combining spectra from individual exposures complete")
+
+    else:
+        log.info("Skip combining spectra from individual exposures")
+
+    # === Step 5.1 - Create single RSS file
+    if config['steps'].get('create_single_rss'):
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
+        status = create_single_rss(config, w_dir=cur_wdir)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+        log.info("Creating a single RSS file")
+
+    else:
+        log.info("Skip creating a single RSS file")
+
+    # === Step 5.2 - Analyse single RSS file
+    if config['steps'].get('analyse_single_rss'):
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
+        log.info("Analysing a single RSS file")
+        status = process_single_rss(config, output_dir=cur_wdir)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+    else:
+        log.info("Skip analysing a single RSS file")
+
+    # === Step 5.3 - Create maps in different lines from single RSS file
+    if config['steps'].get('create_image_from_single_rss'):
+        w_dir = output_dir
+        if w_dir is None:
+            w_dir = config.get('default_output_dir')
+        log.info("Create images from measurements from RSS file")
+        status = True
+        if config['imaging'].get('lines') is None:
+            log.info("Nothing to show. Exit")
+            return
+        for cur_obj in config['object']:
+            cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+            if not os.path.exists(cur_wdir):
+                log.error(
+                    f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
+                status = False
+                continue
+            file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+
+            cur_status = create_line_image_from_rss(file_fluxes=file_fluxes, lines=config['imaging'].get('lines'),
+                                                    pxscale_out=config['imaging'].get('pxscale'),
+                                                    r_lim=config['imaging'].get('r_lim'),
+                                                    sigma=config['imaging'].get('sigma'),
+                                                    output_dir=os.path.join(cur_wdir,'maps_singleRSS'),
+                                                    outfile_prefix=f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec")
+            status = status & cur_status
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+    else:
+        log.info("Skip imaging from a single RSS file")
+
+    # === Step 6.1 - create maps in different lines (alternative to signle RSS)
+    if config['steps'].get('imaging'):
+        if not config['imaging'].get('lines') or (len(config['imaging'].get('lines')) == 0):
+            log.error("No lines are present in config file. Exit.")
+            return
+
+        if config['imaging'].get('interpolate'):
+            # reconstruct an image from an RSS-style input (positions and fluxes)
+            # Sanchez+2012 - modified version of shepard's method
+            log.info("Create combined image in emission lines using shepard's method")
+            use_shepard = True
+        else:
+            use_shepard = False
+            log.info("Create images in lines for individual exposures")
+
+        status = do_imaging(config, output_dir=output_dir, use_shepard=use_shepard)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+
+        if not use_shepard:
+            log.info("Combine images")
+            status = combine_images(config, w_dir=output_dir)
+            if not status:
+                log.error("Critical errors occurred. Exit.")
+                return
+    else:
+        log.info('Skip imaging step')
+
+    # === Step 7 - create cubes in different lines
+    if config['steps'].get('create_cube'):
+        status = do_cube_construction(config, output_dir=output_dir)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+
+    # # == Ancillary test steps
+    # if config['steps'].get('test_pixel_shifts'):
+    #     status = do_test_pix_shift(config)
+    #     if not status:
+    #         log.error("Critical errors occurred. Exit.")
+    #         return
+    #     log.info("Testing of pixel shifts complete")
+    # else:
+    #     log.info("Skip testing")
+    #
+    # else:
+    #     log.info('Skip pixel shift testing')
+
+    log.info("Done!")
 
 
 def quickflux(rsshdu, wrange, crange=None, selection=None, include_sky=False, partial_sky=False):
@@ -355,7 +546,7 @@ def fit_spectra(rsshdu, wrange, selection=None, lines=None, fix_ratios=None, flu
     for spec_id, cur_data in enumerate(zip(flux_all, errors_all, lsf_all)):
         if do_helio_corr:
             sc = SkyCoord(ra=ra_fib[spec_id] * u.degree, dec=dec_fib[spec_id] * u.degree, frame='icrs')
-            vcorr = sc.radial_velocity_correction(kind='heliocentric', obstime=obstime, location=loc).value
+            vcorr = sc.radial_velocity_correction(kind='heliocentric', obstime=obstime, location=loc).to(u.km/u.s).value
         else:
             vcorr = 0.
         if mc_errors:
@@ -669,12 +860,7 @@ def quickmap(mjd: int, expnum: int, do_astrom=False, wrange=(6558,6565), crange=
         tab = Table(rss['SLITMAP'].data)
         selsci = selsci & (tab['fibstatus'] == 0)
 
-
     flux = quickflux(rss, wrange, crange=crange, include_sky=include_sky)
-    # tab = Table.read("/home/egorov/Dropbox/LVM/Orion_S2_densities.txt", format='ascii')
-    # flux = tab["ne_[SII]_6716_6731"][tab["Exp"] == expnum]
-    #
-    # rec = np.isfinite(flux)
 
     if do_astrom:
         radec_offset = None
@@ -1473,7 +1659,7 @@ def fit_all_from_current_spec(params, header=None,
 
             res_output[f'{ln}_flux'] = np.nansum(np.array(fluxes)[rec_comp])
             res_output[f'{ln}_fluxerr'] = np.sqrt(np.nansum(np.array(fluxes_err)[rec_comp]**2))
-            res_output[f'{ln}_vel'] = vel + vhel - vel_sky_correct
+            res_output[f'{ln}_vel'] = vel + vhel# - vel_sky_correct
             res_output[f'{ln}_velerr'] = v_err
             res_output[f'{ln}_disp'] = disp
             res_output[f'{ln}_disperr'] = sigma_err
@@ -2273,12 +2459,12 @@ def extract_flux_and_coords_parallel(data, wrange=None, crange=None, wrange_cube
                                                 flux_corr_cf=flux_corr_cf, consider_as_comp=consider_as_comp,
                                                 lines=lines_fit, fix_ratios=fix_ratios, velocity=velocity)
 
-            cur_wrange_sky = [5560, 5590]#[6280, 6320]
-            _, vel_sky, disp_sky, _ = fit_spectra(rss, cur_wrange_sky, selection=sci, mask_wl=mask_wl,
-                                                mean_bounds=(-2,2),sky_only=True,
-                                                ra_fib=ra_fib, dec_fib=dec_fib, include_sky=True,
-                                                flux_corr_cf=flux_corr_cf, consider_as_comp=[0],
-                                                lines=[5577.], fix_ratios=None, velocity=0, do_helio_corr=False) #6300.304
+            # cur_wrange_sky = [5560, 5590]#[6280, 6320]
+            # _, vel_sky, disp_sky, _ = fit_spectra(rss, cur_wrange_sky, selection=sci, mask_wl=mask_wl,
+            #                                     mean_bounds=(-2,2),sky_only=True,
+            #                                     ra_fib=ra_fib, dec_fib=dec_fib, include_sky=True,
+            #                                     flux_corr_cf=flux_corr_cf, consider_as_comp=[0],
+            #                                     lines=[5577.], fix_ratios=None, velocity=0, do_helio_corr=False) #6300.304
 
             if flux.shape[2] > 1:
                 flux_err = flux[:, :, 1]
@@ -2291,7 +2477,7 @@ def extract_flux_and_coords_parallel(data, wrange=None, crange=None, wrange_cube
                 disp_err = np.zeros_like(disp)[:, :, 0]
                 cont_err = np.zeros_like(cont)[:, :, 0]
             flux = flux[:, :, 0]
-            vel = vel[:, :, 0] - vel_sky[:, :, 0] #vel_sky[:, :, 0]#
+            vel = vel[:, :, 0] #- vel_sky[:, :, 0] #vel_sky[:, :, 0]#
             disp = disp[:, :, 0]
             cont = cont[:, :, 0]
 
@@ -3244,264 +3430,94 @@ def mask_sky_at_bright_lines(sky_spec, mask=None, wave=None, vel=0):
     #     # spec_out[rec_masked] = np.interp(wave[rec_masked], wave[rec], spec_out[rec])
     return spec_out
 
-# def check_pixel_shift(data):
-#     mjd, first_exp, source_dir, messup = data
-#     imagetyp = "object"
-#     expnums = sorted(md.get_frames_metadata(mjd=mjd).query(
-#         "imagetyp == @imagetyp and not (ldls|quartz|argon|neon|hgne|xenon)").expnum.unique())
-#
-#     if messup:
-#         calseq.messup_frame(mjd, expnum=expnums[1], shifts=[2345], spec="2", shift_size=-2, undo_messup=False)
-#
-#     try:
-#         calseq.fix_raw_pixel_shifts(mjd=mjd, expnums=expnums, ref_expnums=first_exp, specs="123",
-#                                     create_mask_always=False, dry_run=True, display_plots=False,
-#                                     wave_widths=0.6*5000, y_widths=20, flat_spikes=21, threshold_spikes=0.1)
-#
-#         f = glob.glob(os.path.join(source_dir, '*pixel_shifts.png'))
-#
-#         if len(f) > 0:
-#             for sf in f:
-#                 shutil.copy(sf, '/home/egorov/Science/LVM/test_pixshift/')
-#             return 1
-#         return 0
-#     except:
-#         return -1
-#
-# def do_test_pix_shift(config):
-#     mjds = []
-#     first_exp = []
-#     source_dirs = []
-#     for cur_obj in config['object']:
-#         for cur_pointing in cur_obj['pointing']:
-#             for data in cur_pointing['data']:
-#                 if isinstance(data['exp'], int):
-#                     exp = [data['exp']]
-#                 else:
-#                     exp = data['exp']
-#                 if data['mjd'] not in mjds:
-#                     sdir = os.path.join("/data/LVM/sdsswork/data/lvm/lco/", str(data['mjd']))
-#                     if os.path.exists(sdir):
-#                         f = glob.glob(os.path.join(sdir, "*.fits.gz"))
-#                         if len(f) < 1:
-#                             continue
-#                     mjds.append(data['mjd'])
-#                     first_exp.append(exp[0])
-#                     source_dirs.append(os.path.join(drp_results_dir_newdrp, '11111', str(data['mjd']), 'ancillary', 'qa'))
-#
-#     mjds = np.array(mjds)
-#     first_exp = np.array(first_exp)
-#     source_dirs = np.array(source_dirs)
-#     if len(mjds) == 0:
-#         log.warning("No mjds provided")
-#         return False
-#
-#     procs = np.nanmin([config['nprocs'], len(mjds)])
-#     log.info(f"Start testing of {len(mjds)} mjds in {procs} parallel processes")
-#     statuses = []
-#     # status = check_pixel_shift((mjds[6], first_exp[6], source_dirs[6]))
-#     #
-#     # return status
-#     messup = [True]
-#     messup.extend([False]*(len(mjds)-1))
-#     messup = np.array(messup)
-#     with mp.Pool(processes=procs) as pool:
-#
-#         for status in tqdm(pool.imap_unordered(check_pixel_shift, zip(mjds, first_exp, source_dirs, messup)),
-#                            ascii=True, desc="Test pixel shifts",
-#                            total=len(mjds), ):
-#             statuses.append(status)
-#         pool.close()
-#         pool.join()
-#         gc.collect()
-#     statuses = np.array(statuses)
-#     npxshifts = np.sum(statuses == 1)
-#     log.info(f"{npxshifts} are detected in {len(mjds)} mjds")
-#     if not np.all(statuses >= 0):
-#         return False
-#
-#     return True
 
+# ===========================================================================================
+# ======== Auxiliary functions (for testing etc., not used in general processing) ===========
+# ===========================================================================================
 
-def LVM_process(config_filename=None, output_dir=None):
-    if not os.path.exists(config_filename):
-        log.error("Config file is not found!")
-        return
-    config = parse_config(config_filename)
-    if not config:
-        log.error("Critical errors occurred. Exit.")
-        return
+def check_pixel_shift(data):
+    from lvmdrp.functions import run_calseq as calseq
+    from lvmdrp.utils import metadata as md
+    mjd, first_exp, source_dir, messup = data
+    imagetyp = "object"
+    expnums = sorted(md.get_frames_metadata(mjd=mjd).query(
+        "imagetyp == @imagetyp and not (ldls|quartz|argon|neon|hgne|xenon)").expnum.unique())
 
-    if len(config['object']) == 0:
-        log.error("Can't find any object. Nothing to process.")
-        return
+    if messup:
+        calseq.messup_frame(mjd, expnum=expnums[1], shifts=[2345], spec="2", shift_size=-2, undo_messup=False)
 
-    # === Step 1 - download all raw files listed in config from SAS. After that - regenerates metadata
-    if config['steps'].get('download'):
-        status = download_from_sas(config)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-        log.info("Downloading from SAS complete")
+    try:
+        calseq.fix_raw_pixel_shifts(mjd=mjd, expnums=expnums, ref_expnums=first_exp, specs="123",
+                                    create_mask_always=False, dry_run=True, display_plots=False,
+                                    wave_widths=0.6*5000, y_widths=20, flat_spikes=21, threshold_spikes=0.1)
 
-    else:
-        log.info("Skip download step")
+        f = glob.glob(os.path.join(source_dir, '*pixel_shifts.png'))
 
-    # === Step 2 - Regenerate metadata (necessary after downloading new files or update of drp)
-    if config['steps'].get('update_metadata'):
-        status = regenerate_metadata(config)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-    else:
-        log.info("Skip updating metadata step")
+        if len(f) > 0:
+            for sf in f:
+                shutil.copy(sf, '/home/egorov/Science/LVM/test_pixshift/')
+            return 1
+        return 0
+    except:
+        return -1
 
-    # === Step 3 - reduce all exposures listed in config
-    if config['steps'].get('reduction'):
-        status = do_quick_reduction(config)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-        log.info("Reduction complete")
+def do_test_pix_shift(config):
+    mjds = []
+    first_exp = []
+    source_dirs = []
+    for cur_obj in config['object']:
+        for cur_pointing in cur_obj['pointing']:
+            for data in cur_pointing['data']:
+                if isinstance(data['exp'], int):
+                    exp = [data['exp']]
+                else:
+                    exp = data['exp']
+                if data['mjd'] not in mjds:
+                    sdir = os.path.join("/data/LVM/sdsswork/data/lvm/lco/", str(data['mjd']))
+                    if os.path.exists(sdir):
+                        f = glob.glob(os.path.join(sdir, "*.fits.gz"))
+                        if len(f) < 1:
+                            continue
+                    mjds.append(data['mjd'])
+                    first_exp.append(exp[0])
+                    source_dirs.append(os.path.join(drp_results_dir, '11111', str(data['mjd']), 'ancillary', 'qa'))
 
-        copy_reduced_data(config, output_dir=output_dir)
+    mjds = np.array(mjds)
+    first_exp = np.array(first_exp)
+    source_dirs = np.array(source_dirs)
+    if len(mjds) == 0:
+        log.warning("No mjds provided")
+        return False
 
-    else:
-        log.info("Skip reduction step")
-
-    # === Step 4.1 - Optional step checking the noise level in the spectra (to evaluate potential correction in abs.cal)
-    if config['steps'].get('check_noise_level'):
-        cur_wdir = output_dir
-        if cur_wdir is None:
-            cur_wdir = config.get('default_output_dir')
-        status = check_noise_level(config, w_dir=cur_wdir)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-
-    # === Step 4.2 - Optional step - combine spectra with sigma-clipping
-    if config['steps'].get('coadd_spectra'):
-        cur_wdir = output_dir
-        if cur_wdir is None:
-            cur_wdir = config.get('default_output_dir')
-        status = do_coadd_spectra(config, w_dir=cur_wdir)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-        log.info("Combining spectra from individual exposures complete")
-
-    else:
-        log.info("Skip combining spectra from individual exposures")
-
-    # === Step 5.1 - Create single RSS file
-    if config['steps'].get('create_single_rss'):
-        cur_wdir = output_dir
-        if cur_wdir is None:
-            cur_wdir = config.get('default_output_dir')
-        status = create_single_rss(config, w_dir=cur_wdir)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-        log.info("Creating a single RSS file")
-
-    else:
-        log.info("Skip creating a single RSS file")
-
-    # === Step 5.2 - Analyse single RSS file
-    if config['steps'].get('analyse_single_rss'):
-        cur_wdir = output_dir
-        if cur_wdir is None:
-            cur_wdir = config.get('default_output_dir')
-        log.info("Analysing a single RSS file")
-        status = process_single_rss(config, output_dir=cur_wdir)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-    else:
-        log.info("Skip analysing a single RSS file")
-
-    # === Step 5.3 - Create maps in different lines from single RSS file
-    if config['steps'].get('create_image_from_single_rss'):
-        w_dir = output_dir
-        if w_dir is None:
-            w_dir = config.get('default_output_dir')
-        log.info("Create images from measurements from RSS file")
-        status = True
-        if config['imaging'].get('lines') is None:
-            log.info("Nothing to show. Exit")
-            return
-        for cur_obj in config['object']:
-            cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
-            if not os.path.exists(cur_wdir):
-                log.error(
-                    f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
-                status = False
-                continue
-            file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
-
-            cur_status = create_line_image_from_rss(file_fluxes=file_fluxes, lines=config['imaging'].get('lines'),
-                                                    pxscale_out=config['imaging'].get('pxscale'),
-                                                    r_lim=config['imaging'].get('r_lim'),
-                                                    sigma=config['imaging'].get('sigma'),
-                                                    output_dir=os.path.join(cur_wdir,'maps_singleRSS'),
-                                                    outfile_prefix=f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec")
-            status = status & cur_status
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-    else:
-        log.info("Skip imaging from a single RSS file")
-
-    # === Step 6.1 - create maps in different lines (alternative to signle RSS)
-    if config['steps'].get('imaging'):
-        if not config['imaging'].get('lines') or (len(config['imaging'].get('lines')) == 0):
-            log.error("No lines are present in config file. Exit.")
-            return
-
-        if config['imaging'].get('interpolate'):
-            # reconstruct an image from an RSS-style input (positions and fluxes)
-            # Sanchez+2012 - modified version of shepard's method
-            log.info("Create combined image in emission lines using shepard's method")
-            use_shepard = True
-        else:
-            use_shepard = False
-            log.info("Create images in lines for individual exposures")
-
-        status = do_imaging(config, output_dir=output_dir, use_shepard=use_shepard)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-
-        if not use_shepard:
-            log.info("Combine images")
-            status = combine_images(config, w_dir=output_dir)
-            if not status:
-                log.error("Critical errors occurred. Exit.")
-                return
-    else:
-        log.info('Skip imaging step')
-
-    # === Step 7 - create cubes in different lines
-    if config['steps'].get('create_cube'):
-        status = do_cube_construction(config, output_dir=output_dir)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-
-    # # == Ancillary test steps
-    # if config['steps'].get('test_pixel_shifts'):
-    #     status = do_test_pix_shift(config)
-    #     if not status:
-    #         log.error("Critical errors occurred. Exit.")
-    #         return
-    #     log.info("Testing of pixel shifts complete")
-    # else:
-    #     log.info("Skip testing")
+    procs = np.nanmin([config['nprocs'], len(mjds)])
+    log.info(f"Start testing of {len(mjds)} mjds in {procs} parallel processes")
+    statuses = []
+    # status = check_pixel_shift((mjds[6], first_exp[6], source_dirs[6]))
     #
-    # else:
-    #     log.info('Skip pixel shift testing')
+    # return status
+    messup = [True]
+    messup.extend([False]*(len(mjds)-1))
+    messup = np.array(messup)
+    with mp.Pool(processes=procs) as pool:
 
-    log.info("Done!")
+        for status in tqdm(pool.imap_unordered(check_pixel_shift, zip(mjds, first_exp, source_dirs, messup)),
+                           ascii=True, desc="Test pixel shifts",
+                           total=len(mjds), ):
+            statuses.append(status)
+        pool.close()
+        pool.join()
+        gc.collect()
+    statuses = np.array(statuses)
+    npxshifts = np.sum(statuses == 1)
+    log.info(f"{npxshifts} are detected in {len(mjds)} mjds")
+    if not np.all(statuses >= 0):
+        return False
+
+    return True
+
+# =========================================================
+# ======== Run LVM_processing from command line ===========
+# =========================================================
 
 if __name__ == "__main__":
     args = sys.argv
