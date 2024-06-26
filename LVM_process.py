@@ -26,7 +26,7 @@ from astropy.wcs import WCS
 from reproject import reproject_interp
 from reproject.mosaicking import find_optimal_celestial_wcs
 from functools import partial
-from astropy.table import Table, vstack, Column
+from astropy.table import Table, vstack, Column, join
 from astropy.coordinates import SkyCoord
 from astropy.modeling import fitting, models
 from astropy.convolution import convolve_fft, kernels
@@ -52,14 +52,24 @@ log.addHandler(ch)
 # ======== Setup =========
 # ========================
 red_data_version = '1.0.3'
+dap_version = '1.0.3'
 drp_version = '1.0.4dev'
 # os.environ['LVMDRP_VERSION'] = drp_version
 agcam_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'agcam', 'lco')
 raw_data_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'lvm', 'lco')
 drp_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux', red_data_version)
+dap_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro',
+                                   'analysis', dap_version)
 drp_results_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux', drp_version)
 server_group_id = 10699  # ID of the group on the server to run 'chgrp' on all new/downloaded files. Skipped if None
 obs_loc = EarthLocation.of_site('lco')  # Observatory location
+
+dap_results_correspondence = {
+    "Ha": 6562.85, 'Hb': 4861.36, 'SII6717': 6716.44, "SII6731": 6730.82, 'NII6584': 6583.45, 'SIII9532': 9531.1,
+    'OIII5007': 5006.84,
+    "OII3727": 3726.03, "OII3729": 3728.82, "Hg": 4340.49, 'OI': 6300.3, "HeII": "HeII_4685.68",
+    "OIII4363": '[OIII]_4363.21', '[NII]5755': '[NII]_5754.59'
+}
 
 # ================================================
 # ======== Main functions for data processing ====
@@ -162,6 +172,9 @@ def LVM_process(config_filename=None, output_dir=None):
         if config['imaging'].get('use_single_rss_file'):
             log.info("Analysing a single RSS file and measuring emission lines")
             status = process_single_rss(config, output_dir=cur_wdir)
+        elif config['imaging'].get('use_dap'):
+            log.info("Processing DAP results")
+            status = parse_dap_results(config, w_dir=cur_wdir)
         else:
             log.info("Analysing all individual RSS files and measuring emission lines")
             status = process_all_rss(config, w_dir=cur_wdir)
@@ -191,11 +204,17 @@ def LVM_process(config_filename=None, output_dir=None):
             if config['imaging'].get('use_single_rss_file'):
                 file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.txt")
                 cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS')
+                line_list = config['imaging'].get('lines')
+            elif config['imaging'].get('use_dap'):
+                file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
+                cur_wdir = os.path.join(cur_wdir, 'maps_dap')
+                line_list = dap_results_correspondence.keys()
             else:
                 file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
                 cur_wdir = os.path.join(cur_wdir, 'maps')
+                line_list = config['imaging'].get('lines')
 
-            cur_status = create_line_image_from_table(file_fluxes=file_fluxes, lines=config['imaging'].get('lines'),
+            cur_status = create_line_image_from_table(file_fluxes=file_fluxes, lines=line_list,
                                                       pxscale_out=config['imaging'].get('pxscale'),
                                                       r_lim=config['imaging'].get('r_lim'),
                                                       sigma=config['imaging'].get('sigma'),
@@ -209,34 +228,34 @@ def LVM_process(config_filename=None, output_dir=None):
     else:
         log.info("Skip imaging from a single RSS file")
 
-    # === Step 6.1 - create maps in different lines (alternative to previous, outdated)
-    if config['steps'].get('imaging'):
-        if not config['imaging'].get('lines') or (len(config['imaging'].get('lines')) == 0):
-            log.error("No lines are present in config file. Exit.")
-            return
-
-        if config['imaging'].get('interpolate'):
-            # reconstruct an image from an RSS-style input (positions and fluxes)
-            # Sanchez+2012 - modified version of shepard's method
-            log.info("Create combined image in emission lines using shepard's method")
-            use_shepard = True
-        else:
-            use_shepard = False
-            log.info("Create images in lines for individual exposures")
-
-        status = do_imaging(config, output_dir=output_dir, use_shepard=use_shepard)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-
-        if not use_shepard:
-            log.info("Combine images")
-            status = combine_images(config, w_dir=output_dir)
-            if not status:
-                log.error("Critical errors occurred. Exit.")
-                return
-    else:
-        log.info('Skip imaging step')
+    # # === Step 6.1 - create maps in different lines (alternative to previous, outdated)
+    # if config['steps'].get('imaging'):
+    #     if not config['imaging'].get('lines') or (len(config['imaging'].get('lines')) == 0):
+    #         log.error("No lines are present in config file. Exit.")
+    #         return
+    #
+    #     if config['imaging'].get('interpolate'):
+    #         # reconstruct an image from an RSS-style input (positions and fluxes)
+    #         # Sanchez+2012 - modified version of shepard's method
+    #         log.info("Create combined image in emission lines using shepard's method")
+    #         use_shepard = True
+    #     else:
+    #         use_shepard = False
+    #         log.info("Create images in lines for individual exposures")
+    #
+    #     status = do_imaging(config, output_dir=output_dir, use_shepard=use_shepard)
+    #     if not status:
+    #         log.error("Critical errors occurred. Exit.")
+    #         return
+    #
+    #     if not use_shepard:
+    #         log.info("Combine images")
+    #         status = combine_images(config, w_dir=output_dir)
+    #         if not status:
+    #             log.error("Critical errors occurred. Exit.")
+    #             return
+    # else:
+    #     log.info('Skip imaging step')
 
     # === Step 7 - create cubes in different lines
     if config['steps'].get('create_cube'):
@@ -933,12 +952,18 @@ def download_from_sas(config):
         log.warning("Will skip downloading raw data")
     if config['download'].get('download_reduced'):
         log.warning("Will download reduced spectra")
+    if config['download'].get('download_dap'):
+        log.warning("Will download DAP outputs")
     f_reduced = {}
+    f_dap = {}
     for cur_obj in config['object']:
         f_reduced[cur_obj['name']] = {}
+        f_dap[cur_obj['name']] = {}
         for cur_pointing in cur_obj['pointing']:
             if cur_pointing['name'] not in f_reduced[cur_obj['name']]:
                 f_reduced[cur_obj['name']][cur_pointing['name']] = []
+            if cur_pointing['name'] not in f_dap[cur_obj['name']]:
+                f_dap[cur_obj['name']][cur_pointing['name']] = []
             if cur_pointing['skip'].get('download'):
                 log.info(f"Skip download for object = {cur_obj['name']}, pointing = {cur_pointing['name']}")
                 continue
@@ -946,6 +971,10 @@ def download_from_sas(config):
                 download_current_reduced = True
             else:
                 download_current_reduced = False
+            if config['download'].get('download_dap'):
+                download_current_dap = True
+            else:
+                download_current_dap = False
 
             for data in cur_pointing['data']:
                 if isinstance(data['exp'], int):
@@ -954,10 +983,11 @@ def download_from_sas(config):
                     exps = data['exp']
 
                 tileids = None
-                if 'tileid' not in cur_pointing and ('tileid' not in data) and download_current_reduced:
+                if ('tileid' not in cur_pointing and ('tileid' not in data) and
+                        (download_current_reduced or download_current_dap)):
                     log.warning(
                         f"Tile ID is not present for object = {cur_obj['name']}, pointing = {cur_pointing['name']}. "
-                        f"Can't download the reduced data for it")
+                        f"Can't download the reduced data or DAP products for for it")
                     download_current_reduced = False
                     tileid = None
                 else:
@@ -998,7 +1028,7 @@ def download_from_sas(config):
                                 counter += 1
                                 rsync.add('lvm_raw', camspec=cam, expnum=str(exp), hemi='s', mjd=str(data['mjd']))
 
-                    if download_current_reduced:
+                    if download_current_reduced or download_current_dap:
                         if tileids is not None and tileids[exp_ind] is not None:
                             if cur_obj['name'] == 'Orion':
                                 if (int(tileids[exp_ind]) < 1027000) & (int(tileids[exp_ind]) != 11111):
@@ -1010,24 +1040,50 @@ def download_from_sas(config):
                                 short_tileid = '0000XX'
                             else:
                                 short_tileid = tileids[exp_ind][:4] + 'XX'
-                        frame_types = ['SFrame']
-                        if config['download'].get('include_cframes'):
-                            frame_types.append('CFrame')
-                        for ft in frame_types:
+                        if download_current_reduced:
+                            frame_types = ['SFrame']
+                            if config['download'].get('include_cframes'):
+                                frame_types.append('CFrame')
+                            for ft in frame_types:
+                                f = glob.glob(
+                                    os.path.join(drp_results_dir_sas, short_tileid, tileids[exp_ind], str(data['mjd']),
+                                                 f'lvm{ft}-*{exp}.fits'))
+                                if not config['download'].get('force_download') and (len(f) == 1):
+                                    counter_exist += 1
+                                else:
+                                    cur_f = os.path.join(drp_results_dir_sas, short_tileid, tileids[exp_ind],
+                                                 str(data['mjd']), f'lvm{ft}-{exp:08d}.fits')
+                                    f_reduced[cur_obj['name']][cur_pointing['name']].append(cur_f)
+                                    new_files.append(cur_f)
+                                    counter += 1
+                                    rsync.add('lvm_frame', expnum=str(exp), mjd=str(data['mjd']), tileid=tileids[exp_ind],
+                                              kind=ft, drpver=f'{red_data_version}')  # /{short_tileid}
+                        if download_current_dap:
                             f = glob.glob(
-                                os.path.join(drp_results_dir_sas, short_tileid, tileids[exp_ind], str(data['mjd']),
-                                             f'lvm{ft}-*{exp}.fits'))
+                                os.path.join(dap_results_dir_sas, short_tileid, tileids[exp_ind], str(data['mjd']),
+                                             f'{exp:08d}', f'dap-rsp*{exp:08d}.dap.fits.gz'))
                             if not config['download'].get('force_download') and (len(f) == 1):
                                 counter_exist += 1
                             else:
-                                cur_f = os.path.join(drp_results_dir_sas, short_tileid, tileids[exp_ind],
-                                             str(data['mjd']), f'lvm{ft}-{exp:08d}.fits')
-                                f_reduced[cur_obj['name']][cur_pointing['name']].append(cur_f)
-                                new_files.append(cur_f)
+                                cur_f = os.path.join(dap_results_dir_sas, short_tileid, tileids[exp_ind],
+                                                     str(data['mjd']), f'{exp:08d}',
+                                                     f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz')
+                                f_dap[cur_obj['name']][cur_pointing['name']].append(cur_f)
                                 counter += 1
-                                rsync.add('lvm_frame', expnum=str(exp), mjd=str(data['mjd']), tileid=tileids[exp_ind],
-                                          kind=ft, drpver=f'{red_data_version}')  # /{short_tileid}
-
+                            rsync.initial_stream.append_task(sas_module='sdsswork',
+                                                             location=f'lvm/spectro/analysis/{dap_version}/'
+                                                                      f'{short_tileid}/{tileids[exp_ind]}/'
+                                                                      f'{str(data["mjd"])}/{exp:08d}/'
+                                                                      f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz',
+                                                             source=f'--no-perms --omit-dir-times '
+                                                                    f'rsync://sdss5@dtn.sdss.org/sdsswork/lvm/'
+                                                                    f'spectro/analysis/{dap_version}/{short_tileid}/'
+                                                                    f'{tileids[exp_ind]}/{str(data["mjd"])}/'
+                                                                    f'{exp:08d}/dap-rsp108-sn20-{exp:08d}.dap.fits.gz',
+                                                             destination=f'{dap_results_dir_sas}/{short_tileid}/'
+                                                                         f'{tileids[exp_ind]}/{str(data["mjd"])}/'
+                                                                         f'{exp:08d}/'
+                                                                         f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz')
                     if config['download'].get('download_agcam'):
                         # add corresponding agcam coadd images
                         f = os.path.join(d_agcam, f'lvm.sci.coadd_s{exp:08d}.fits')
@@ -1036,7 +1092,7 @@ def download_from_sas(config):
                         else:
                             new_files.append(f)
                             counter += 1
-                        rsync.initial_stream.append_task(sas_module='sdsswork',
+                            rsync.initial_stream.append_task(sas_module='sdsswork',
                                                          location=f'data/agcam/lco/{str(data["mjd"])}/coadds/lvm.sci.coadd_s{exp:08d}.fits',
                                                          source=f'--no-perms --omit-dir-times rsync://sdss5@dtn.sdss.org/sdsswork/data/agcam/lco/{str(data["mjd"])}/coadds/lvm.sci.coadd_s{exp:08d}.fits',
                                                          destination=f'{d_agcam}/lvm.sci.coadd_s{exp:08d}.fits')
@@ -1067,33 +1123,42 @@ def download_from_sas(config):
             os.chown(f, uid=uid, gid=server_group_id)
         os.chmod(f, 0o664)
 
-    if config['download'].get('download_reduced'):
+    if config['download'].get('download_reduced') or config['download'].get('download_dap'):
         output_dir = config.get('default_output_dir')
         if not output_dir:
             log.error("Output directory is not set up. Cannot copy files")
             return False
+        copying_type = ['reduced frames', 'DAP results']
+        for ind, cur_dict in enumerate([f_reduced, f_dap]):
+            for obj_name in cur_dict:
+                for pointing_name in cur_dict[obj_name]:
+                    if len(cur_dict[obj_name][pointing_name]) == 0:
+                        log.warning(f"Nothing to copy for object = {obj_name}, pointing = {pointing_name} ({copying_type[ind]})")
+                        continue
+                    if not pointing_name:
+                        curdir = os.path.join(output_dir, obj_name)
+                    else:
+                        curdir = os.path.join(output_dir, obj_name, pointing_name)
+                    if not os.path.exists(curdir):
+                        os.makedirs(curdir)
+                        uid = os.stat(curdir).st_uid
+                        if server_group_id is not None:
+                            os.chown(curdir, uid=uid, gid=server_group_id)
+                        os.chmod(curdir, 0o775)
+                    log.info(f"Copy {len(cur_dict[obj_name][pointing_name])} {copying_type[ind]} for object = {obj_name}, pointing = {pointing_name}")
+                    for sf in cur_dict[obj_name][pointing_name]:
+                        fname = os.path.join(curdir, os.path.split(sf)[-1])
+                        if os.path.isfile(fname):
+                            os.remove(fname)
+                        elif os.path.islink(fname):
+                            os.unlink(fname)
+                        # os.symlink(sf, fname)
+                        shutil.copy(sf, curdir)
+                        if server_group_id is not None:
+                            uid = os.stat(fname).st_uid
+                            os.chown(fname, uid=uid, gid=server_group_id)
+                        os.chmod(fname, 0o664)
 
-        for obj_name in f_reduced:
-            for pointing_name in f_reduced[obj_name]:
-                if len(f_reduced[obj_name][pointing_name]) == 0:
-                    log.warning(f"Nothing to copy for object = {obj_name}, pointing = {pointing_name}")
-                    continue
-                if not pointing_name:
-                    curdir = os.path.join(output_dir, obj_name)
-                else:
-                    curdir = os.path.join(output_dir, obj_name, pointing_name)
-                if not os.path.exists(curdir):
-                    os.makedirs(curdir)
-                    uid = os.stat(curdir).st_uid
-                    if server_group_id is not None:
-                        os.chown(curdir, uid=uid, gid=server_group_id)
-                    os.chmod(curdir, 0o775)
-                log.info(f"Copy {len(f_reduced[obj_name][pointing_name])} for object = {obj_name}, pointing = {pointing_name}")
-                for sf in f_reduced[obj_name][pointing_name]:
-                    fname = os.path.join(curdir, os.path.split(sf)[-1])
-                    if os.path.exists(fname):
-                        os.remove(fname)
-                    shutil.copy(sf, curdir)
     return True
 
 
@@ -1109,6 +1174,7 @@ def metadata_parallel(mjd):
         log.error(f"Something wrong with metadata regeneration: {e}")
         return False
     return True
+
 
 def regenerate_metadata(config):
     """
@@ -1398,6 +1464,188 @@ def do_coadd_spectra(config, w_dir=None):
     else:
         return True
 
+def parse_dap_results(config, w_dir=None):
+    if w_dir is None or not os.path.exists(w_dir):
+        log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
+        return False
+    status_out = True
+    for cur_obj in config['object']:
+        log.info(f"Parsing DAP results for {cur_obj.get('name')}.")
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        if not os.path.exists(cur_wdir):
+            log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
+            status_out = status_out & False
+            continue
+        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
+
+        dtypes = [float]*(len(dap_results_correspondence)*6+5)
+        dtypes[2] = str
+        names = ['fib_ra', 'fib_dec', 'sourceid', 'fluxcorr', 'vhel_corr']
+        for kw in dap_results_correspondence.keys():
+            names.extend([kw+"_flux", kw+"_fluxerr", kw+"_vel", kw+"_velerr",kw+"_disp", kw+"_disperr"])
+
+        tab_summary = Table(data=None, names=names,
+                            dtype=dtypes)
+
+        for cur_pointing in cur_obj['pointing']:
+            if cur_pointing['skip'].get('imaging'):
+                log.warning(f"Skip DAP processing (and imaging) for object = {cur_obj['name']}, "
+                            f"pointing = {cur_pointing.get('name')}")
+                continue
+            for data in tqdm(cur_pointing['data'], ascii=True, desc="MJDs done", total=len(cur_pointing['data'])):
+                if isinstance(data['exp'], int):
+                    exps = [data['exp']]
+                else:
+                    exps = data['exp']
+
+                if not data.get('flux_correction'):
+                    cur_flux_corr = [1.] * len(exps)
+                else:
+                    cur_flux_corr = data['flux_correction']
+                if isinstance(cur_flux_corr, float) or isinstance(cur_flux_corr, int):
+                    cur_flux_corr = [cur_flux_corr]
+                for exp_id, exp in enumerate(exps):
+                    cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz')
+                    if not os.path.exists(cur_fname):
+                        log.warning(f"Can't find {cur_fname}")
+                        status_out = status_out & False
+                        continue
+                    cur_fname_spec = os.path.join(cur_wdir, cur_pointing['name'], f'lvmSFrame-{exp:08d}.fits')
+                    with fits.open(cur_fname_spec) as rss:
+                        cur_table_fibers = Table(rss['SLITMAP'].data)
+                        sci = cur_table_fibers['targettype'] == 'science'
+                        if config['imaging'].get('skip_bad_fibers'):
+                            sci = sci & (cur_table_fibers['fibstatus'] == 0)
+                        sci = np.flatnonzero(sci)
+
+                    with fits.open(cur_fname) as rss:
+                        # cur_table_fibers = Table(rss['PT'].data)
+                        cur_table_fluxes = Table(rss['PM_ELINES'].data)
+                        cur_table_fluxes_faint = Table(rss['NP_ELINES_B'].data)
+                        cur_obstime = Time(rss[0].header['OBSTIME'])
+                        radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
+                                                 dec=rss[0].header['POSCIDE'],
+                                                 unit=('degree', 'degree'))
+                    vcorr = np.round(radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
+                                                                              location=obs_loc).to(u.km / u.s).value,1)
+
+                    cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy() #
+                    cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
+
+                    cur_table_summary.add_columns(
+                         [Column(np.array([f'{int(exp)}.{int(cur_fibid+1)}' for cur_fibid in sci]),
+                                name='id', dtype=str),
+                         Column(np.array([str(cur_flux_corr[exp_id])] * len(cur_table_summary)),
+                                name='fluxcorr', dtype=float),
+                         Column(np.array([str(vcorr)] * len(cur_table_summary)), name='vhel_corr',
+                                dtype=float)]
+                         )
+                    for kw in dap_results_correspondence.keys():
+                        if isinstance(dap_results_correspondence[kw], str):
+                            cur_table_summary = join(cur_table_summary, cur_table_fluxes_faint['id',
+                                "flux_" + dap_results_correspondence[kw], "e_flux_"+dap_results_correspondence[kw],
+                                "vel_" + dap_results_correspondence[kw], "e_vel_"+dap_results_correspondence[kw],
+                                "disp_" + dap_results_correspondence[kw], "e_disp_"+dap_results_correspondence[kw]
+                            ], keys='id')
+
+                            cur_table_summary["flux_"+dap_results_correspondence[kw]] *= cur_flux_corr[exp_id]
+                            cur_table_summary["e_flux_"+dap_results_correspondence[kw]] *= cur_flux_corr[exp_id]
+                            cur_table_summary["vel_" + dap_results_correspondence[kw]] += vcorr
+                            cur_table_summary["disp_" + dap_results_correspondence[kw]] /= (float(dap_results_correspondence[kw][-6]) / 3e5)
+                            cur_table_summary["e_disp_"+dap_results_correspondence[kw]] /= (float(dap_results_correspondence[kw][-6]) / 3e5)
+                            cur_table_summary.rename_columns(["flux_"+dap_results_correspondence[kw],
+                                                              "e_flux_"+dap_results_correspondence[kw],
+                                                              "vel_" + dap_results_correspondence[kw],
+                                                              "e_vel_" + dap_results_correspondence[kw],
+                                                              "disp_" + dap_results_correspondence[kw],
+                                                              "e_disp_"+dap_results_correspondence[kw]],
+                                                             [kw + "_flux", kw + "_fluxerr", kw + "_vel",
+                                                              kw + "_velerr", kw + "_disp", kw + "_disperr"])
+
+                            # cur_table_summary.add_columns([Column(cur_table_fluxes_faint["flux_"+dap_results_correspondence[kw]]*cur_flux_corr[exp_id],
+                            #                                      dtype=float, name=kw + "_flux"),
+                            #                               Column(cur_table_fluxes_faint["e_flux_"+dap_results_correspondence[kw]]*cur_flux_corr[exp_id],
+                            #                                      dtype=float, name=kw + "_fluxerr"),
+                            #                               Column(np.round(cur_table_fluxes_faint["vel_"+dap_results_correspondence[kw]] + vcorr,
+                            #                                               1),
+                            #                                      dtype=float, name=kw + "_vel"),
+                            #                               Column(np.round(cur_table_fluxes_faint["e_vel_"+dap_results_correspondence[kw]], 2),
+                            #                                      dtype=float, name=kw + "_velerr"),
+                            #                               Column(
+                            #                                   np.round(cur_table_fluxes_faint["disp_"+dap_results_correspondence[kw]]/float(dap_results_correspondence[kw][-6])*3e5,
+                            #                                            2),
+                            #                                   dtype=float, name=kw + "_disp"),
+                            #                               Column(np.round(cur_table_fluxes_faint["e_disp_"+dap_results_correspondence[kw]]/float(dap_results_correspondence[kw][-6])*3e5,
+                            #                                               2),
+                            #                                      dtype=float, name=kw + "_disperr")
+                            #                               ])
+                        else:
+                            rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
+                            cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
+                                                    'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
+                            cur_table_summary['flux'] *= cur_flux_corr[exp_id]
+                            cur_table_summary['e_flux'] *= cur_flux_corr[exp_id]
+                            cur_table_summary['vel'] += vcorr
+                            cur_table_summary['disp'] /= (dap_results_correspondence[kw] / 3e5)
+                            cur_table_summary['e_disp'] /= (dap_results_correspondence[kw] / 3e5)
+                            cur_table_summary.rename_columns(['flux', 'e_flux', 'vel', 'e_vel', 'disp', 'e_disp'],
+                                                             [kw+"_flux", kw+"_fluxerr", kw+"_vel",
+                                                              kw+"_velerr", kw+"_disp", kw+"_disperr"])
+
+
+                            #
+                            #
+                            #
+                            # if len(rec_cur_line) == 0:
+                            #     continue
+                            # if (len(rec_cur_line) == len(cur_table_summary)) and False:
+                            #     cur_table_summary.add_columns([Column(cur_table_fluxes[rec_cur_line]['flux']*cur_flux_corr[exp_id],
+                            #                                          dtype=float,name=kw+"_flux"),
+                            #                                   Column(cur_table_fluxes[rec_cur_line]['e_flux']*cur_flux_corr[exp_id],
+                            #                                          dtype=float,name=kw+"_fluxerr"),
+                            #                                   Column(np.round(cur_table_fluxes[rec_cur_line]['vel']+vcorr,2),
+                            #                                          dtype=float, name=kw + "_vel"),
+                            #                                   Column(np.round(cur_table_fluxes[rec_cur_line]['e_vel'],2),
+                            #                                          dtype=float, name=kw + "_velerr"),
+                            #                                   Column(np.round(cur_table_fluxes[rec_cur_line]['disp']/dap_results_correspondence[kw]*3e5,
+                            #                                                   2),
+                            #                                          dtype=float, name=kw + "_disp"),
+                            #                                   Column(np.round(cur_table_fluxes[rec_cur_line]['e_disp']/dap_results_correspondence[kw]*3e5, 2),
+                            #                                          dtype=float, name=kw + "_disperr")
+                            #                                   ])
+                            # else:
+                            #     cur_table_summary.add_columns([Column([np.nan]*len(cur_table_summary),
+                            #                                           dtype=float, name=kw + "_flux"),
+                            #                                    Column([np.nan]*len(cur_table_summary),
+                            #                                           dtype=float, name=kw + "_fluxerr"),
+                            #                                    Column([np.nan]*len(cur_table_summary),
+                            #                                           dtype=float, name=kw + "_vel"),
+                            #                                    Column([np.nan]*len(cur_table_summary),
+                            #                                        dtype=float, name=kw + "_velerr"),
+                            #                                    Column([np.nan]*len(cur_table_summary),
+                            #                                           dtype=float, name=kw + "_disp"),
+                            #                                    Column([np.nan]*len(cur_table_summary),
+                            #                                           dtype=float, name=kw + "_disperr")
+                            #                                    ])
+                            #     for row_id, row in enumerate(cur_table_summary):
+                            #         rec_cur_row = np.flatnonzero(cur_table_fluxes[rec_cur_line]['id'] ==
+                            #                                      row['sourceid'])
+                            #         if len(rec_cur_row) != 1:
+                            #             print('wtf????')
+                            #             continue
+                            #
+                            #         cur_table_summary[row_id][kw + "_flux"] = cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['flux']*cur_flux_corr[exp_id]
+                            #         cur_table_summary[row_id][kw + "_fluxerr"] = cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['e_flux']*cur_flux_corr[exp_id]
+                            #         cur_table_summary[row_id][kw + "_vel"] = np.round(cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['vel'] + vcorr, 2)
+                            #         cur_table_summary[row_id][kw + "_velerr"] = np.round(cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['e_vel'], 2)
+                            #         cur_table_summary[row_id][kw + "_disp"] = np.round(
+                            #             cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['disp']/dap_results_correspondence[kw]*3e5, 2)
+                            #         cur_table_summary[row_id][kw + "_disperr"] = np.round(
+                            #             cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['e_disp']/dap_results_correspondence[kw]*3e5, 2)
+                    tab_summary = vstack([tab_summary, cur_table_summary])
+        tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+    return status_out
+
 
 def process_all_rss(config, w_dir=None):
     """
@@ -1414,6 +1662,7 @@ def process_all_rss(config, w_dir=None):
     precision_fiber = config['imaging'].get('fiber_pos_precision')
     if not precision_fiber:
         precision_fiber = 1.5
+
     for cur_obj in config['object']:
         status_out = True
         log.info(f"Analysing RSS files for {cur_obj.get('name')}.")
@@ -1422,7 +1671,6 @@ def process_all_rss(config, w_dir=None):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
             continue
-
         f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
 
         if not config['imaging'].get('override_flux_table') and os.path.isfile(f_tab_summary):
@@ -1872,9 +2120,9 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
             rec_tiles = rec_tiles & (ras <= ra_lims[1])
     if dec_lims is not None and type(dec_lims) in [list, tuple]:
         if dec_lims[0] is not None and np.isfinite(dec_lims[0]):
-            rec_tiles = rec_tiles & (ras >= dec_lims[0])
+            rec_tiles = rec_tiles & (decs >= dec_lims[0])
         if dec_lims[1] is not None and np.isfinite(dec_lims[1]):
-            rec_tiles = rec_tiles & (ras <= dec_lims[1])
+            rec_tiles = rec_tiles & (decs <= dec_lims[1])
     rec_tiles = np.flatnonzero(rec_tiles)
     if len(rec_tiles) == 0:
         log.warning("Nothing to show")
@@ -1917,9 +2165,12 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
     names_out = []
 
     for cur_line in lines:
-        lns = cur_line.get('line')
-        if isinstance(lns, str):
-            lns = [lns]
+        if isinstance(cur_line, str):  # this is valid in case of DAP
+            lns = [cur_line]
+        else:
+            lns = cur_line.get('line')
+            if isinstance(lns, str):
+                lns = [lns]
         for ln in lns:
             if values is None:
                 if f'{ln}_flux' in table_fluxes.colnames:
