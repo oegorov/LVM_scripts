@@ -36,6 +36,8 @@ from astropy.time import Time
 from astropy.coordinates import EarthLocation
 from matplotlib.gridspec import GridSpec
 from scipy.interpolate import interp1d
+from matplotlib.backends.backend_pdf import PdfPages
+
 import warnings
 from astropy.utils.exceptions import AstropyWarning, AstropyUserWarning
 warnings.simplefilter('ignore', UserWarning)
@@ -67,7 +69,9 @@ obs_loc = EarthLocation.of_site('lco')  # Observatory location
 dap_results_correspondence = {
     "Ha": 6562.85, 'Hb': 4861.36, 'SII6717': 6716.44, "SII6731": 6730.82, 'NII6584': 6583.45, 'SIII9532': 9531.1,
     'OIII5007': 5006.84,
-    "OII3727": 3726.03, "OII3729": 3728.82, "Hg": 4340.49, 'OI': 6300.3, "HeII": "HeII_4685.68",
+    "OII3727": 3726.03, "OII3729": 3728.82, "Hg": 4340.49,
+    'OI': 6300.3,
+    "HeII": "HeII_4685.68",
     "OIII4363": '[OIII]_4363.21', '[NII]5755': '[NII]_5754.59'
 }
 
@@ -1464,6 +1468,17 @@ def do_coadd_spectra(config, w_dir=None):
     else:
         return True
 
+
+def initialize_hist_layout():
+    fig = plt.figure(figsize=(15, 25))
+    nregs = 6
+    nlines = 3
+    gs = GridSpec(nregs, nlines, height_ratios=[1]*nregs, width_ratios=[1]*nlines, wspace=0.2, hspace=0.3,
+                  figure=fig, left=0.1, right=0.99, top=0.95, bottom=0.1)
+    axes = [[plt.subplot(gs[i, j]) for j in range(nlines)] for i in range(nregs)]
+    return fig, axes
+
+
 def parse_dap_results(config, w_dir=None):
     if w_dir is None or not os.path.exists(w_dir):
         log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
@@ -1486,6 +1501,12 @@ def parse_dap_results(config, w_dir=None):
 
         tab_summary = Table(data=None, names=names,
                             dtype=dtypes)
+
+        if config['imaging'].get('save_hist_dap'):
+            f_hist_out = os.path.join(cur_wdir, 'compare_flux_levels.pdf')
+            pdf = PdfPages(f_hist_out)
+            fig_hist, axes = initialize_hist_layout()
+            nregs_hist_done = 0
 
         for cur_pointing in cur_obj['pointing']:
             if cur_pointing['skip'].get('imaging'):
@@ -1562,27 +1583,12 @@ def parse_dap_results(config, w_dir=None):
                                                              [kw + "_flux", kw + "_fluxerr", kw + "_vel",
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
 
-                            # cur_table_summary.add_columns([Column(cur_table_fluxes_faint["flux_"+dap_results_correspondence[kw]]*cur_flux_corr[exp_id],
-                            #                                      dtype=float, name=kw + "_flux"),
-                            #                               Column(cur_table_fluxes_faint["e_flux_"+dap_results_correspondence[kw]]*cur_flux_corr[exp_id],
-                            #                                      dtype=float, name=kw + "_fluxerr"),
-                            #                               Column(np.round(cur_table_fluxes_faint["vel_"+dap_results_correspondence[kw]] + vcorr,
-                            #                                               1),
-                            #                                      dtype=float, name=kw + "_vel"),
-                            #                               Column(np.round(cur_table_fluxes_faint["e_vel_"+dap_results_correspondence[kw]], 2),
-                            #                                      dtype=float, name=kw + "_velerr"),
-                            #                               Column(
-                            #                                   np.round(cur_table_fluxes_faint["disp_"+dap_results_correspondence[kw]]/float(dap_results_correspondence[kw][-6])*3e5,
-                            #                                            2),
-                            #                                   dtype=float, name=kw + "_disp"),
-                            #                               Column(np.round(cur_table_fluxes_faint["e_disp_"+dap_results_correspondence[kw]]/float(dap_results_correspondence[kw][-6])*3e5,
-                            #                                               2),
-                            #                                      dtype=float, name=kw + "_disperr")
-                            #                               ])
                         else:
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
+                            if kw == 'OI':
+                                cur_table_summary['flux'] -= np.nanmedian(cur_table_summary['flux'])
                             cur_table_summary['flux'] *= cur_flux_corr[exp_id]
                             cur_table_summary['e_flux'] *= cur_flux_corr[exp_id]
                             cur_table_summary['vel'] += vcorr
@@ -1592,57 +1598,43 @@ def parse_dap_results(config, w_dir=None):
                                                              [kw+"_flux", kw+"_fluxerr", kw+"_vel",
                                                               kw+"_velerr", kw+"_disp", kw+"_disperr"])
 
-
-                            #
-                            #
-                            #
-                            # if len(rec_cur_line) == 0:
-                            #     continue
-                            # if (len(rec_cur_line) == len(cur_table_summary)) and False:
-                            #     cur_table_summary.add_columns([Column(cur_table_fluxes[rec_cur_line]['flux']*cur_flux_corr[exp_id],
-                            #                                          dtype=float,name=kw+"_flux"),
-                            #                                   Column(cur_table_fluxes[rec_cur_line]['e_flux']*cur_flux_corr[exp_id],
-                            #                                          dtype=float,name=kw+"_fluxerr"),
-                            #                                   Column(np.round(cur_table_fluxes[rec_cur_line]['vel']+vcorr,2),
-                            #                                          dtype=float, name=kw + "_vel"),
-                            #                                   Column(np.round(cur_table_fluxes[rec_cur_line]['e_vel'],2),
-                            #                                          dtype=float, name=kw + "_velerr"),
-                            #                                   Column(np.round(cur_table_fluxes[rec_cur_line]['disp']/dap_results_correspondence[kw]*3e5,
-                            #                                                   2),
-                            #                                          dtype=float, name=kw + "_disp"),
-                            #                                   Column(np.round(cur_table_fluxes[rec_cur_line]['e_disp']/dap_results_correspondence[kw]*3e5, 2),
-                            #                                          dtype=float, name=kw + "_disperr")
-                            #                                   ])
-                            # else:
-                            #     cur_table_summary.add_columns([Column([np.nan]*len(cur_table_summary),
-                            #                                           dtype=float, name=kw + "_flux"),
-                            #                                    Column([np.nan]*len(cur_table_summary),
-                            #                                           dtype=float, name=kw + "_fluxerr"),
-                            #                                    Column([np.nan]*len(cur_table_summary),
-                            #                                           dtype=float, name=kw + "_vel"),
-                            #                                    Column([np.nan]*len(cur_table_summary),
-                            #                                        dtype=float, name=kw + "_velerr"),
-                            #                                    Column([np.nan]*len(cur_table_summary),
-                            #                                           dtype=float, name=kw + "_disp"),
-                            #                                    Column([np.nan]*len(cur_table_summary),
-                            #                                           dtype=float, name=kw + "_disperr")
-                            #                                    ])
-                            #     for row_id, row in enumerate(cur_table_summary):
-                            #         rec_cur_row = np.flatnonzero(cur_table_fluxes[rec_cur_line]['id'] ==
-                            #                                      row['sourceid'])
-                            #         if len(rec_cur_row) != 1:
-                            #             print('wtf????')
-                            #             continue
-                            #
-                            #         cur_table_summary[row_id][kw + "_flux"] = cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['flux']*cur_flux_corr[exp_id]
-                            #         cur_table_summary[row_id][kw + "_fluxerr"] = cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['e_flux']*cur_flux_corr[exp_id]
-                            #         cur_table_summary[row_id][kw + "_vel"] = np.round(cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['vel'] + vcorr, 2)
-                            #         cur_table_summary[row_id][kw + "_velerr"] = np.round(cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['e_vel'], 2)
-                            #         cur_table_summary[row_id][kw + "_disp"] = np.round(
-                            #             cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['disp']/dap_results_correspondence[kw]*3e5, 2)
-                            #         cur_table_summary[row_id][kw + "_disperr"] = np.round(
-                            #             cur_table_fluxes[rec_cur_line[rec_cur_row[0]]]['e_disp']/dap_results_correspondence[kw]*3e5, 2)
                     tab_summary = vstack([tab_summary, cur_table_summary])
+
+                    if config['imaging'].get('save_hist_dap'):
+                        if nregs_hist_done >= 6:
+                            pdf.savefig(fig_hist)
+                            plt.close()
+                            fig_hist, axes = initialize_hist_layout()
+                            nregs_hist_done = 0
+
+                        for kw_ind, kw in enumerate(['Ha', 'SII6717', 'OIII5007']):
+                            rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
+                            data_hist = cur_table_fluxes[rec_cur_line]['flux']
+                            data_hist = data_hist[np.isfinite(data_hist) & (data_hist != 0)]
+                            data_hist = data_hist[(data_hist < np.nanpercentile(data_hist, 90)) &
+                                                  (data_hist > np.nanpercentile(data_hist, 10))]
+                            med = np.nanmedian(data_hist)
+                            mean = np.nanmean(data_hist)
+                            std = np.nanstd(data_hist)
+                            ax = axes[nregs_hist_done][kw_ind]
+                            plt.sca(ax)
+                            plt.hist(data_hist, bins=50, color='skyblue', edgecolor='black')
+                            xlim = plt.xlim()
+                            ylim = plt.ylim()
+                            plt.title(f"Pointing: {cur_pointing['name']}, MJD={data['mjd']}, "
+                                      f"exp={exp}, {kw}", fontsize=14)
+                            plt.text(xlim[0]+(xlim[1]-xlim[0])*0.3,ylim[0]+(ylim[1]-ylim[0])*0.9,
+                                     f'median = {np.round(med,1)}', fontsize=14)
+                            plt.text(xlim[0] + (xlim[1] - xlim[0]) * 0.3, ylim[0] + (ylim[1] - ylim[0]) * 0.8,
+                                     f'mean = {np.round(mean, 1)}±{np.round(std, 1)}', fontsize=14)
+                            plt.xlabel('Flux')
+                            plt.ylabel('Frequency')
+
+                        nregs_hist_done+=1
+        if config['imaging'].get('save_hist_dap'):
+            pdf.savefig(fig_hist)
+            plt.close()
+            pdf.close()
         tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
     return status_out
 
@@ -2293,8 +2285,8 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
         res_output[f'SKY{int(sky_line)}_disperr'] = sigma_err
         res_output[f'SKY{int(sky_line)}_cont'] = disp
         res_output[f'SKY{int(sky_line)}_conterr'] = sigma_err
-        if int(sky_line) == 5577:
-            vel_sky_correct = vel
+        # if int(np.round(sky_line)) == 6300:
+        #     vel_sky_correct = vel
 
     for cur_line_params in line_fit_params:
         (line_name, wl_range, mask_wl, line_fit,
@@ -2325,7 +2317,7 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
 
             res_output[f'{ln}_flux'] = np.nansum(np.array(fluxes)[rec_comp])
             res_output[f'{ln}_fluxerr'] = np.sqrt(np.nansum(np.array(fluxes_err)[rec_comp]**2))
-            res_output[f'{ln}_vel'] = np.round(vel + vhel,1)# - vel_sky_correct
+            res_output[f'{ln}_vel'] = np.round(vel + vhel - vel_sky_correct,1)
             res_output[f'{ln}_velerr'] = np.round(v_err,1)
             res_output[f'{ln}_disp'] = np.round(disp,1)
             res_output[f'{ln}_disperr'] = np.round(sigma_err,1)
@@ -3585,21 +3577,6 @@ def reconstruct_shepards_method(data, wrange=None, crange=None, mask_wl=None, px
     bgr_flux = np.array(bgr_flux)
     print(np.nanmedian(bgr_flux)/bgr_flux)
 
-    # log.info(f"Construct interpolated image")
-    # tab = Table.read("/home/egorov/Dropbox/LVM/Orion_S2_densities.txt", format='ascii')
-    # fluxes = tab["ne_[SII]_6716_6731"]
-    #
-    # rec = np.isfinite(fluxes)
-    # fluxes = fluxes[rec]
-    # ras = ras[rec]
-    # decs = decs[rec]
-    # if do_median_masking:
-    #     sort_seq = np.lexsort((ras, decs))
-    #     ras = ras[sort_seq]
-    #     decs = decs[sort_seq]
-    #     values = values[sort_seq]
-    #     # values = sigma_clip(values, sigma=10, masked=False)
-        # values = median_filter(values, 7)
     img_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values,
                                r_lim=r_lim, sigma=sigma)
 
@@ -3646,6 +3623,7 @@ def get_noise_one_exp(filename):
                 #np.nanmedian(estimate_noise_array_sky[:, sel_wave_sky_cont], axis=1) * np.sum(sel_wave_sky)))
 
     return noise, sky_line_sn/noise
+
 
 def check_noise_level(config, w_dir=None):
     log.info("Check noise level in the spectra to make adjustment of fluxes easier")
@@ -3713,44 +3691,6 @@ def check_noise_level(config, w_dir=None):
         statuses.append(True)
     return np.all(statuses)
 
-
-# def extract_astrometry(params):
-#     exp, exp_id, mjd, cur_wdir, objname, cur_pname, skip_bad_fibers,
-#     for exp_id, exp in tqdm(enumerate(exps), total=len(exps), ascii=True,
-#                             desc=f'Extraction fiber coordinates for pointing {cur_pointing["name"]}'):
-#         cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'lvmCFrame-{exp:08d}.fits')
-#         if not os.path.exists(cur_fname):
-#             log.warning(f"Can't find {cur_fname}")
-#             continue
-#
-#         with fits.open(cur_fname) as rss:
-#             if not rss[0].header.get('FLUXCAL'):
-#                 log.error(f"Missing flux calibration for exp={exp}. Skip it.")
-#                 statuses.append(False)
-#                 continue
-#
-#             tab = Table(rss['SLITMAP'].data)
-#             sci = np.flatnonzero(tab['targettype'] == 'science')
-#             if config.get('skip_bad_fibers'):
-#                 sci = np.flatnonzero((tab['targettype'] == 'science') & (tab['fibstatus'] == 0))
-#
-#         radec_center = derive_radec_ifu(data['mjd'], exp, ref_exp,
-#                                         objname=cur_obj['name'],
-#                                         pointing_name=cur_pointing.get('name'))
-#         ra_fib, dec_fib = make_radec(tab['xpmm'][sci], tab['ypmm'][sci], radec_center[0], radec_center[1],
-#                                      radec_center[2])
-#         radec_array = SkyCoord(ra=ra_fib, dec=dec_fib, unit=('degree', 'degree'))
-#         for trow_id, trow in enumerate(tab[sci]):
-#             cur_radec = radec_array[trow_id]
-#             radec_tab = SkyCoord(ra=tab_summary['fib_ra'], dec=tab_summary['fib_dec'], unit=('degree', 'degree'))
-#             rec = np.flatnonzero(radec_tab.separation(cur_radec) < (1 * u.arcsec))
-#             fib_id = f"{exp:08d}_{trow['fiberid']:04d}"
-#             if len(rec) > 0:
-#                 tab_summary[rec[0]]['sourceid'] += f', {fib_id}'
-#                 tab_summary[rec[0]]['fluxcorr'] += f', {cur_flux_corr[exp_id]}'
-#             else:
-#                 tab_summary.add_row([len(tab_summary) + 1, ra_fib[trow_id], dec_fib[trow_id],
-#                                      trow['targettype'], trow['fibstatus'], fib_id, str(cur_flux_corr[exp_id])])
 
 def create_single_rss(config, w_dir=None):
     """
@@ -4096,22 +4036,6 @@ def mask_sky_at_bright_lines(sky_spec, mask=None, wave=None, vel=0):
 # ======== Auxiliary functions (for testing etc., not used in general processing) ===========
 # ===========================================================================================
 #
-
-# def parse_json_to_toml(file='/home/egorov/Dropbox/LVM/lvm.json'):
-#     import json
-#
-#     f = open(file, 'r')
-#     json_string = f.read()
-#     f.close()
-#
-#     # Parse the JSON string
-#     parsed_json = json.loads(json_string)
-#
-#     # Access the data part
-#     data = parsed_json["data"]
-#
-#     # Print the data
-#     return data
 
 # def check_pixel_shift(data):
 #     from lvmdrp.functions import run_calseq as calseq
