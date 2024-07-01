@@ -1495,7 +1495,7 @@ def parse_dap_results(config, w_dir=None):
 
         dtypes = [float]*(len(dap_results_correspondence)*6+5)
         dtypes[2] = str
-        names = ['fib_ra', 'fib_dec', 'sourceid', 'fluxcorr', 'vhel_corr']
+        names = ['fib_ra', 'fib_dec', 'id', 'fluxcorr', 'vhel_corr']
         for kw in dap_results_correspondence.keys():
             names.extend([kw+"_flux", kw+"_fluxerr", kw+"_vel", kw+"_velerr",kw+"_disp", kw+"_disperr"])
 
@@ -1555,7 +1555,7 @@ def parse_dap_results(config, w_dir=None):
 
                     cur_table_summary.add_columns(
                          [Column(np.array([f'{int(exp)}.{int(cur_fibid+1)}' for cur_fibid in sci]),
-                                name='id', dtype=str),
+                               name='id', dtype=str),
                          Column(np.array([str(cur_flux_corr[exp_id])] * len(cur_table_summary)),
                                 name='fluxcorr', dtype=float),
                          Column(np.array([str(vcorr)] * len(cur_table_summary)), name='vhel_corr',
@@ -1714,14 +1714,18 @@ def process_all_rss(config, w_dir=None):
                         with fits.open(cur_fname) as rss:
                             cur_table_fibers = Table(rss['SLITMAP'].data)
                             cur_obstime = Time(rss[0].header['OBSTIME'])
-                            radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
-                                                     dec=rss[0].header['POSCIDE'],
-                                                     unit=('degree', 'degree'))
-
-                        sci = cur_table_fibers['targettype'] == 'science'
-                        if config['imaging'].get('skip_bad_fibers'):
-                            sci = sci & (cur_table_fibers['fibstatus'] == 0)
-                        sci = np.flatnonzero(sci)
+                            sci = cur_table_fibers['targettype'] == 'science'
+                            if config['imaging'].get('skip_bad_fibers'):
+                                sci = sci & (cur_table_fibers['fibstatus'] == 0)
+                            sci = np.flatnonzero(sci)
+                            try:
+                                radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
+                                                         dec=rss[0].header['POSCIDE'],
+                                                         unit=('degree', 'degree'))
+                            except ValueError:
+                                radec_central = SkyCoord(ra=np.nanmedian(cur_table_fibers[sci]['ra']),
+                                                         dec=np.nanmedian(cur_table_fibers[sci]['dec']),
+                                                         unit=('degree', 'degree'))
 
                         vcorr = np.round(radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
                                                                                location=obs_loc).to(u.km / u.s).value,
@@ -1936,7 +1940,7 @@ def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sk
                 wave = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
                             hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] +
                            hdu['FLUX'].header['CRVAL1'])
-
+                dw = hdu['FLUX'].header['CDELT1']
                 flux = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
                 ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
 
@@ -1954,14 +1958,18 @@ def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sk
             if delta_v > 3.:
                 flux[ind, :] = np.interp(wave, wave*(1-delta_v/3e5), flux[ind, :])
 
-    flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
-    ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0)**2)
+    if len(flux.shape) == 2 and flux.shape[0] > 1:
+        flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
+        ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0)**2)
+    elif len(flux.shape) == 2:
+        flux = flux[0, :]
+        ivar = ivar[0, :]
 
     res_out = {}
 
     for cur_line_params in line_params:
         (line_name, wl_range, mask_wl, cont_range) = cur_line_params
-        selwave_extended = np.flatnonzero((wave >= (min(wl_range) - 100)) * (wave <= (max(wl_range) + 100)))
+        selwave_extended = np.flatnonzero((wave >= (min(wl_range) - 70)) * (wave <= (max(wl_range) + 70)))
         cur_wave = wave[selwave_extended]
         cur_flux = flux[selwave_extended]
         if mask_wl is not None:
@@ -1983,9 +1991,8 @@ def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sk
             res_out[f'{line_name}_flux'] = np.nan
             res_out[f'{line_name}_fluxerr'] = np.nan
             continue
-        cur_flux_orig=cur_flux.copy()
+        cur_flux_orig = cur_flux.copy()
         cur_flux[~np.isfinite(cur_flux)] = np.nanmedian(cur_flux)
-        dw = wave[1] - wave[0]
 
         flux_rss = np.nansum(cur_flux[sel_wave]) * dw
         error_rss = np.nansum(cur_errors[sel_wave] ** 2) * dw ** 2
@@ -2125,25 +2132,27 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         table_fluxes = table_fluxes[rec_tiles]
 
     dec_0 = np.min(decs)-37./2/3600
-    ra_0 = np.max(ras)+37./2/3600/np.cos(dec_0/180*np.pi)
     dec_1 = np.max(decs) + 37. / 2 / 3600
-    ra_1 = np.min(ras) - 37. / 2 / 3600 / np.cos(dec_1 / 180 * np.pi)
+    ra_0 = np.max(ras)+37./2/3600/np.cos(dec_1/180*np.pi)
+    ra_1 = np.min(ras) - 37. / 2 / 3600 / np.cos(dec_0 / 180 * np.pi)
 
-    ra_cen = (ra_0+ra_1)/2.
+    ra_cen = (ra_0 + ra_1)/2.
     dec_cen = (dec_0 + dec_1) / 2.
     nx = np.ceil((ra_0 - ra_1)*np.cos(dec_cen/180.*np.pi)/pxscale_out*3600./2.).astype(int)*2+1
     ny = np.ceil((dec_1 - dec_0) / pxscale_out * 3600./2.).astype(int)*2+1
     ra_0 = np.round(ra_cen + (nx-1)/2 * pxscale_out / 3600. / np.cos(dec_cen/180.*np.pi),6)
     dec_0 = np.round(dec_cen - (ny - 1) / 2 * pxscale_out/ 3600., 6)
-
+    ra_cen = np.round(ra_cen, 6)
+    dec_cen = np.round(dec_cen, 6)
     # Create a new WCS object.  The number of axes must be set
     # from the start
     wcs_out = WCS(naxis=2)
-    wcs_out.wcs.crpix = [1, 1]
+    wcs_out.wcs.crpix = [(nx-1)/2+1, (ny-1)/2+1]
     wcs_out.wcs.cdelt = np.array([-np.round(pxscale_out/3600.,6), np.round(pxscale_out/3600.,6)])
-    wcs_out.wcs.crval = [ra_0, dec_0]
+    wcs_out.wcs.crval = [ra_cen, dec_cen]
     wcs_out.wcs.cunit = ['deg', 'deg']
     wcs_out.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
     shape_out = (ny, nx)
     grid_scl = wcs_out.proj_plane_pixel_scales()[0].value * 3600.
 
@@ -2543,7 +2552,7 @@ def process_single_rss(config, output_dir=None):
                 else:
                     save_plot_ids = None
                 t = (line_name, wl_range, mask_wl, line_fit,
-                                        include_comp, fix_ratios, save_plot_test, save_plot_ids)
+                     include_comp, fix_ratios, save_plot_test, save_plot_ids)
                 line_fit_params.append(t)
 
         if len(line_fit_params) > 0:
