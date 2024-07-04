@@ -72,7 +72,9 @@ dap_results_correspondence = {
     "OII3727": 3726.03, "OII3729": 3728.82, "Hg": 4340.49,
     'OI': 6300.3,
     "HeII": "HeII_4685.68",
-    "OIII4363": '[OIII]_4363.21', '[NII]5755': '[NII]_5754.59'
+    "OIII4363": '[OIII]_4363.21', 'NII5755': '[NII]_5754.59',
+    '[SII]4068': '[SII]_4068.6', 'NeIII3869': '[NeIII]_3868.75',
+    'OII7320': '[OII]_7318.92', 'OII7330': '[OII]_7329.66', 'ArIII7136': '[ArIII]_7135.8'
 }
 
 # ================================================
@@ -1074,7 +1076,7 @@ def download_from_sas(config):
                                                      f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz')
                                 f_dap[cur_obj['name']][cur_pointing['name']].append(cur_f)
                                 counter += 1
-                            rsync.initial_stream.append_task(sas_module='sdsswork',
+                                rsync.initial_stream.append_task(sas_module='sdsswork',
                                                              location=f'lvm/spectro/analysis/{dap_version}/'
                                                                       f'{short_tileid}/{tileids[exp_ind]}/'
                                                                       f'{str(data["mjd"])}/{exp:08d}/'
@@ -1088,6 +1090,7 @@ def download_from_sas(config):
                                                                          f'{tileids[exp_ind]}/{str(data["mjd"])}/'
                                                                          f'{exp:08d}/'
                                                                          f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz')
+
                     if config['download'].get('download_agcam'):
                         # add corresponding agcam coadd images
                         f = os.path.join(d_agcam, f'lvm.sci.coadd_s{exp:08d}.fits')
@@ -1542,11 +1545,19 @@ def parse_dap_results(config, w_dir=None):
                     with fits.open(cur_fname) as rss:
                         # cur_table_fibers = Table(rss['PT'].data)
                         cur_table_fluxes = Table(rss['PM_ELINES'].data)
-                        cur_table_fluxes_faint = Table(rss['NP_ELINES_B'].data)
+                        cur_table_fluxes_faint_b = Table(rss['NP_ELINES_B'].data)
+                        cur_table_fluxes_faint_r = Table(rss['NP_ELINES_R'].data)
+                        cur_table_fluxes_faint_i = Table(rss['NP_ELINES_I'].data)
                         cur_obstime = Time(rss[0].header['OBSTIME'])
-                        radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
-                                                 dec=rss[0].header['POSCIDE'],
-                                                 unit=('degree', 'degree'))
+                        try:
+                            radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
+                                                     dec=rss[0].header['POSCIDE'],
+                                                     unit=('degree', 'degree'))
+                        except ValueError:
+                            radec_central = SkyCoord(ra=np.nanmedian(cur_table_fibers[sci]['ra']),
+                                                     dec=np.nanmedian(cur_table_fibers[sci]['dec']),
+                                                     unit=('degree', 'degree'))
+
                     vcorr = np.round(radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
                                                                               location=obs_loc).to(u.km / u.s).value,1)
 
@@ -1563,6 +1574,13 @@ def parse_dap_results(config, w_dir=None):
                          )
                     for kw in dap_results_correspondence.keys():
                         if isinstance(dap_results_correspondence[kw], str):
+                            curline_wl = float(dap_results_correspondence[kw].split('_')[-1])
+                            if curline_wl > 7500:
+                                cur_table_fluxes_faint = cur_table_fluxes_faint_i
+                            elif curline_wl > 5800:
+                                cur_table_fluxes_faint = cur_table_fluxes_faint_r
+                            else:
+                                cur_table_fluxes_faint = cur_table_fluxes_faint_b
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes_faint['id',
                                 "flux_" + dap_results_correspondence[kw], "e_flux_"+dap_results_correspondence[kw],
                                 "vel_" + dap_results_correspondence[kw], "e_vel_"+dap_results_correspondence[kw],
@@ -1572,8 +1590,8 @@ def parse_dap_results(config, w_dir=None):
                             cur_table_summary["flux_"+dap_results_correspondence[kw]] *= cur_flux_corr[exp_id]
                             cur_table_summary["e_flux_"+dap_results_correspondence[kw]] *= cur_flux_corr[exp_id]
                             cur_table_summary["vel_" + dap_results_correspondence[kw]] += vcorr
-                            cur_table_summary["disp_" + dap_results_correspondence[kw]] /= (float(dap_results_correspondence[kw][-6]) / 3e5)
-                            cur_table_summary["e_disp_"+dap_results_correspondence[kw]] /= (float(dap_results_correspondence[kw][-6]) / 3e5)
+                            cur_table_summary["disp_" + dap_results_correspondence[kw]] /= (curline_wl / 3e5)
+                            cur_table_summary["e_disp_"+dap_results_correspondence[kw]] /= (curline_wl / 3e5)
                             cur_table_summary.rename_columns(["flux_"+dap_results_correspondence[kw],
                                                               "e_flux_"+dap_results_correspondence[kw],
                                                               "vel_" + dap_results_correspondence[kw],
@@ -3229,7 +3247,7 @@ def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_v
     x_fibers, y_fibers = wcs_out.world_to_pixel(radec)
     # x_fibers = np.round(x_fibers).astype(int)
     # y_fibers = np.round(y_fibers).astype(int)
-    chunk_size = min([int(r_lim * 15 / pxsize), 100])
+    chunk_size = min([int(r_lim * 10 / pxsize), 100])
     khalfsize = int(np.ceil(r_lim / pxsize))
     kernel_size = khalfsize * 2 + 1
 
