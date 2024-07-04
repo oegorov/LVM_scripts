@@ -377,7 +377,7 @@ def quickflux(rsshdu, wrange, crange=None, selection=None, include_sky=False, pa
     return flux_rss#/texp
 
 
-def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-5.,5.),
+def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10.,10.),
                  ax=None, return_plot_data=False, subtract_lsf=True):
     spectrum, errors, lsf = data
     rec = np.flatnonzero(np.isfinite(spectrum) & (spectrum != 0) &
@@ -1874,7 +1874,7 @@ def process_all_rss(config, w_dir=None):
                          table_fluxes['vhel_corr'], np.arange(len(table_fluxes)))
             with mp.Pool(processes=nprocs) as pool:
                 for status, res, spec_id in tqdm(
-                        pool.imap_unordered(
+                        pool.imap(
                             partial(quickflux_all_lines,
                                     line_params=line_quicksum_params,
                                     include_sky=config['imaging'].get('include_sky'),
@@ -1904,7 +1904,7 @@ def process_all_rss(config, w_dir=None):
                          table_fluxes['vhel_corr'], np.arange(len(table_fluxes)))
             with mp.Pool(processes=nprocs) as pool:
                 for status, fit_res, plot_data, spec_id in tqdm(
-                        pool.imap_unordered(
+                        pool.imap(
                             partial(fit_all_from_current_spec,
                                     line_fit_params=line_fit_params, single_rss=False,
                                     mean_bounds=mean_bounds, velocity=vel,
@@ -2271,7 +2271,7 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
 
             if ind > 1:
                 delta_v = float(vhel_corrs[ind]) - float(vhel_corrs[0])
-                if delta_v > 3.:
+                if delta_v > 2.:
                     flux[ind, :] = np.interp(wl_grid, wl_grid*(1-delta_v/3e5), flux[ind, :])
 
         flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
@@ -2603,7 +2603,7 @@ def process_single_rss(config, output_dir=None):
             params = zip(flux, ivar, sky, sky_ivar, lsf, vhel, spec_ids)
             with mp.Pool(processes=nprocs) as pool:
                 for status, fit_res, plot_data, spec_id in tqdm(
-                                pool.imap_unordered(
+                                pool.imap(
                                     partial(fit_all_from_current_spec, header=header,
                                             line_fit_params=line_fit_params,
                                             mean_bounds=mean_bounds, velocity=vel,
@@ -2825,7 +2825,7 @@ def do_imaging(config, output_dir=None, use_shepard=False):
                     procs = np.nanmin([config['nprocs'], len(pairs)])
                     local_statuses=[]
                     with mp.Pool(processes=procs) as pool:
-                        for status in tqdm(pool.imap_unordered(
+                        for status in tqdm(pool.imap(
                                 partial(quickmap_parallel, wl_range=wl_range, cont_range=cont_range,
                                         output_dir=cur_output_dir, suffix=suffix,
                                         include_sky=config['imaging'].get('include_sky'),
@@ -3412,7 +3412,7 @@ def reconstruct_cube_shepards_method(data, pxscale_out=3.,r_lim=50, sigma=2.,wdi
     comb_id_seen = []
 
     with mp.Pool(processes=nprocs) as pool:
-        for status, ra, dec, flux, comb_id, wave_dict in tqdm(pool.imap_unordered(
+        for status, ra, dec, flux, comb_id, wave_dict in tqdm(pool.imap(
                 partial(extract_flux_and_coords_parallel,
                         skip_bad_fibers=skip_bad_fibers, include_sky=include_sky, partial_sky=partial_sky, wdir=wdir, wrange_cube=wrange),
                 data),
@@ -3691,7 +3691,7 @@ def check_noise_level(config, w_dir=None):
         tab = Table(names=['mjd', 'expnum', 'noise', 'sn_sky', 'correction', 'sn_sky_frac'],
                     dtype=[int, int, float, float, float, float])
         with mp.Pool(processes=procs) as pool:
-            for spec_id, results in tqdm(enumerate(pool.imap_unordered(get_noise_one_exp, files)),
+            for spec_id, results in tqdm(enumerate(pool.imap(get_noise_one_exp, files)),
                     ascii=True, desc="Calculate noise levels",
                     total=len(files),):
                 noise, sky_sn = results
