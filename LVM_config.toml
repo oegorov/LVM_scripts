@@ -1,0 +1,127 @@
+# =======================================
+# ==== General control of the workflow ====
+# =======================================
+nprocs = 20 # number of processes to use for parallelization
+default_output_dir = "/data/LVM/Reduced/" # default directory where reduced data and products will be copied/saved. Could be overwritten by the second argument in of the script
+keep_existing_single_rss = false # needed only for re-creation of a single RSS file with all exposures. If true - considers the existing file as container (allows to save time)
+        
+[steps] # true = run step; false = skip
+download = false
+update_metadata = false
+reduction = false
+create_single_rss = false # only if you want to create a single RSS file with all fibers (includes sigma-clipping for fibers with same coordinates)
+analyse_rss = true
+create_images = false
+# create_cube = false # Outdated, may work incorrectly
+        
+# =======================================
+# === Control of downloading process
+# =======================================
+[download]
+force_download = false # will not download files if they already exist
+download_reduced = true # if you want to download reduced data from SAS. No needs to do update_metadata and reduction then
+include_cframes = false # Set true if CFrames should be downloaded from SAS. By default, only SFrames will be downloaded
+download_raw = false # set false if you want to download reduced files and agcam images only
+download_agcam = false # set true if you want to download agcam images (they are necessary for data reduction, but not necessary if you work with already reduced frames)
+download_dap = true # set true to download DAP results for the selected exposures
+        
+# =======================================
+# === Control of data reduction
+# =======================================
+[reduction]
+reduce_parallel = false # if true, then drp will run in parallel threads. This will use all processors on the server, so other users will not able to do anything. Avoid this unless you need this done urgently 
+wham_sky_only = false # set true if you want to include only sky from the darkest sky patch (wham).
+copy_cframes = false # Set true if CFrames should be copied to the object folder after reduction is done. By default, only SFrames will be copied 
+        
+# =======================================
+# === Control of imaging in individual lines
+# =======================================
+[imaging]
+use_dap = false # if true, then ONLY DAP files will be analysed for producing the images. I.e. all fluxes/kinematics will be taken from DAP results. Otherwise, the results of the fitting will be used
+save_hist_dap = false # if true, saves the figure showing the histograms of the flux distribution in 3 lines for all individual exposures based on the DAP results
+interpolate = true # use interpolation (shepard's method). IN THE CURRENT VERSION MUST BE ALWAYS TRUE (False is not tested)
+skip_bad_fibers = true # skip fibers classified as bad (only for shepard's method)
+include_sky = false # if true, then subtracted sky will be added back before the flux extraction
+partial_sky = false # if true, then subtracted sky will be removed back at the location of the emission lines. 
+use_single_rss_file = false # if true, then creates single RSS file with all individual fibers and process this file. 
+override_flux_table = true # if true, then overwrites table with measured fluxes every time (otherwise - tries to add new/update existing measurements instead)
+pxscale = 5 # Pixel scale (in arcsec) for output image
+sigma = 2 # arcsec; standard deviation for calculating of the weights of neighbouringfibers
+r_lim = 50 # arcsec; maximal radius to limit the fibers to be considered in flux calculation for a given position
+fiber_pos_precision = 1.5 # Spectra from the fibers with positions deviating by less than this value (in arcsec) are combined with sigma-clipping before the analysis
+        
+# === How to define the regions for summing fluxes in the spectrum
+[[imaging.lines]] # One block per line for output image
+line = 'Ha_mom0' # name of the line (arbitrary)
+wl_range = [6561, 6564] # wavelength range (rest-frame) defining the borders of the line to sum up
+cont_range = [6530, 6540, 6605, 6620] # 2- or 4-element list defining of the borders where the continuum will be measured
+median_filter = false # if true, then median filter will be applied to produce smoother (but less physical) image (default=false)
+
+[[imaging.lines]]
+line = 'OIII5007_mom0'
+wl_range = [5003, 5010]
+cont_range = [4831, 4851, 5030, 5050]
+
+# === How to define lines to fit by Gaussians
+[[imaging.lines]]
+line = ["OII3726", "OII3729"] # Names of the lines (arbitrary).
+wl_range = [3710, 3745] # Limit wavelenght range in the fitting procedure (in rest-frame)
+line_fit = [3726.0, 3728.8] # Rest-frame wavelength of the lines. The number of components is equal to number of lines here
+# fix_ratios = [1, 0.333] # It is possible to fix line ratios, when necessary
+#show_fit_examples='/data/LVM/Reduced/testfit.pdf' #
+include_comp = [0, 1] # Each component from "line_fit" must be assigned to line name from "line". If several have the same index here, their fluxes will be summed. If some has -1 - it will be ignored in the results
+        
+# =======================================
+# ====== Setup for individual objects ====
+# =======================================
+        
+[[object]]
+name = "YourObject"
+velocity = 0
+
+#==== P1 =====
+[[object.pointing]] # Number of pointings is arbitrary. It may be useful to isolate several pointings from others
+name = "P1"
+
+[[object.pointing.data]] # one block per MJD
+mjd = 60202
+tileid = [11111, 11111]
+exp = [5006, 5007]
+
+[[object.pointing.data]]
+mjd = 60206
+tileid = [11111]
+exp = [5253]
+
+[[object.pointing.data]]
+mjd = 60244
+tileid = [11111, 11111, 11111]
+exp = [6244, 6245, 6243]
+
+[object.pointing.skip] # indicate if some steps must be skipped for this particular pointing
+download = false
+reduction = false
+imaging = false
+create_cube = false
+
+#==== P2 =====
+[[object.pointing]]
+name = "P2"
+
+[[object.pointing.data]]
+mjd = 60207
+tileid = [11111, 11111]
+exp = [5298]
+
+[[object.pointing.data]]
+mjd = 60255
+tileid = [11111, 11111]
+exp = [7337, 7338]
+
+
+[object.pointing.skip]
+download = false
+reduction = false
+imaging = false
+create_cube = false
+
