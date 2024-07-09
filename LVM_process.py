@@ -1802,7 +1802,7 @@ def process_all_rss(config, w_dir=None):
         log.info("Analysing spectra")
         table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
                                   converters={'sourceid': str, 'fluxcorr': str, 'vhel_corr': str})
-        mean_bounds = (-5, 5)
+        mean_bounds = (-10, 10)
         vel = cur_obj.get('velocity')
         line_fit_params = []
         line_quicksum_params = []
@@ -1860,8 +1860,8 @@ def process_all_rss(config, w_dir=None):
                     save_plot_test = line.get('show_fit_examples')
                 else:
                     save_plot_test = None
-                if save_plot_test:
-                    save_plot_ids = np.random.choice(range(rss['FLUX'].header['NAXIS2']), 24)
+                if save_plot_test is not None:
+                    save_plot_ids = np.random.choice(range(len(table_fluxes)), 24)
                 else:
                     save_plot_ids = None
                 t = (line_name, wl_range, mask_wl, line_fit,
@@ -1929,6 +1929,24 @@ def process_all_rss(config, w_dir=None):
                     status_out = False
                 else:
                     status_out = status_out & True
+            if save_plot_test is not None and (len(all_plot_data) > 0):
+                fig = plt.figure(figsize=(20, 30))
+                gs = GridSpec(6, 4, fig, 0.1, 0.1, 0.99, 0.95, wspace=0.1, hspace=0.1,
+                              width_ratios=[1] * 4, height_ratios=[1] * 6)
+                cur_ax_id = 0
+                for cur_id in range(len(all_plot_data)):
+                    # TODO This is very rough fix
+                    if all_plot_data[cur_id][0] is None:
+                        continue
+                    ax = fig.add_subplot(gs[cur_ax_id])
+
+                    ax.plot(all_plot_data[cur_id][0][0], all_plot_data[cur_id][0][1], 'k-', label='Obs')
+                    ax.plot(all_plot_data[cur_id][0][0], all_plot_data[cur_id][0][2],
+                            'r--', label=f'Fit')
+                    ax.legend()
+                    ax.set_title(f"Row #{cur_id}", fontsize=16)
+                    cur_ax_id += 1
+                fig.savefig(save_plot_test, bbox_inches='tight')
         table_fluxes.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
         statuses.append(status_out)
     if not np.all(statuses):
@@ -1977,8 +1995,12 @@ def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sk
                 flux[ind, :] = np.interp(wave, wave*(1-delta_v/3e5), flux[ind, :])
 
     if len(flux.shape) == 2 and flux.shape[0] > 1:
-        flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
-        ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0)**2)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+            )
+            flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
+            ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0)**2)
     elif len(flux.shape) == 2:
         flux = flux[0, :]
         ivar = ivar[0, :]
@@ -2273,11 +2295,14 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
                 delta_v = float(vhel_corrs[ind]) - float(vhel_corrs[0])
                 if delta_v > 2.:
                     flux[ind, :] = np.interp(wl_grid, wl_grid*(1-delta_v/3e5), flux[ind, :])
-
-        flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
-        ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0)**2)
-        sky = np.nansum(sky, axis=0) / np.sum(np.isfinite(sky), axis=0)
-        sky_ivar = 1 / (np.nansum(1 / sky_ivar, axis=0) / np.sum(np.isfinite(sky_ivar), axis=0)**2)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+            )
+            flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
+            ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0)**2)
+            sky = np.nansum(sky, axis=0) / np.sum(np.isfinite(sky), axis=0)
+            sky_ivar = 1 / (np.nansum(1 / sky_ivar, axis=0) / np.sum(np.isfinite(sky_ivar), axis=0)**2)
         vhel = float(vhel_corrs[0])
         wave = wl_grid
     else:
@@ -2295,6 +2320,7 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
 
     wid = 10
     vel_sky_correct = 0
+    mean_bounds_1 =np.array(mean_bounds)
     for sky_line in [5577.338, 6300.304]:
         sel_wave = np.flatnonzero((wave >= (sky_line - wid)) & (wave <= (sky_line + wid)))
         (fluxes, vel, disp, cont, fluxes_err, v_err,
@@ -2323,17 +2349,18 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
         if save_plot_ids is not None and spec_id in save_plot_ids:
             (fluxes, vel, disp, cont, fluxes_err, v_err,
              sigma_err, cont_err, plot_data) = fit_cur_spec((flux[sel_wave], error[sel_wave], lsf[sel_wave]),
-                                                            wave=wave[sel_wave], mean_bounds=mean_bounds,
+                                                            wave=wave[sel_wave], mean_bounds=mean_bounds_1,
                                                             lines=line_fit, fix_ratios=fix_ratios,
                                                             velocity=velocity+vel_sky_correct-vhel, return_plot_data=True)
             all_plot_data.append(plot_data)
         else:
             (fluxes, vel, disp, cont, fluxes_err, v_err,
              sigma_err, cont_err) = fit_cur_spec((flux[sel_wave], error[sel_wave], lsf[sel_wave]),
-                                                 wave=wave[sel_wave], mean_bounds=mean_bounds,
+                                                 wave=wave[sel_wave], mean_bounds=mean_bounds_1,
                                                             lines=line_fit, fix_ratios=fix_ratios,
                                                             velocity=velocity+vel_sky_correct-vhel, return_plot_data=False,
                                                  )
+            all_plot_data.append(None)
         if ~np.isfinite(vel):
             continue
 
