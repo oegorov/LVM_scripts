@@ -15,4 +15,6 @@ For this purpose, this script allows takes the information about tiles/exposures
 
 The script is intended for simplifying/automatizing work with the LVM data at our local server. In principle, it can be adapted for other machines, if necessary.
 
-**Example of the TOML config file and more detailed description is TBA at some point...** 
+LVM_config_S308.toml gives an example of the TOML config file
+
+**More description is TBA at some point...** 
