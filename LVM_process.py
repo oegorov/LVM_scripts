@@ -265,7 +265,10 @@ def LVM_process(config_filename=None, output_dir=None):
 
     # === Step 7 - create cubes in different lines
     if config['steps'].get('create_cube'):
-        status = do_cube_construction(config, output_dir=output_dir)
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
+        status = reconstruct_cube(config, w_dir=cur_wdir)
         if not status:
             log.error("Critical errors occurred. Exit.")
             return
@@ -377,16 +380,35 @@ def quickflux(rsshdu, wrange, crange=None, selection=None, include_sky=False, pa
     return flux_rss#/texp
 
 
-def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10.,10.),
-                 ax=None, return_plot_data=False, subtract_lsf=True):
+def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10., 10.),
+                       ax=None, return_plot_data=False, subtract_lsf=True, multicomp=False):
     spectrum, errors, lsf = data
     rec = np.flatnonzero(np.isfinite(spectrum) & (spectrum != 0) &
                          np.isfinite(errors) & (np.isfinite(lsf)) & (lsf > 0) & np.isfinite(wave))  # & (errors > 0)
     if len(rec) < 10:
         if return_plot_data:
-            return [np.nan]*len(lines), np.nan, np.nan, np.nan, [np.nan]*len(lines), np.nan, np.nan, np.nan, None
+            return [np.nan] * len(lines), [np.nan] * len(lines), [np.nan] * len(lines), np.nan, [np.nan] * len(
+                lines), np.nan, np.nan, np.nan, None
         else:
-            return [np.nan] * len(lines), np.nan, np.nan, np.nan, [np.nan] * len(lines), np.nan, np.nan, np.nan
+            return [np.nan] * len(lines), [np.nan] * len(lines), [np.nan] * len(lines), np.nan, [np.nan] * len(
+                lines), np.nan, np.nan, np.nan
+
+    spectrum = spectrum[rec]
+    errors = errors[rec]
+    lsf = lsf[rec]
+    wave = wave[rec]
+
+
+def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10., 10.),
+                 ax=None, return_plot_data=False, subtract_lsf=True, multicomp=False):
+    spectrum, errors, lsf = data
+    rec = np.flatnonzero(np.isfinite(spectrum) & (spectrum != 0) &
+                         np.isfinite(errors) & (np.isfinite(lsf)) & (lsf > 0) & np.isfinite(wave))  # & (errors > 0)
+    if len(rec) < 10:
+        if return_plot_data:
+            return [np.nan]*len(lines), [np.nan]*len(lines), [np.nan]*len(lines), np.nan, [np.nan]*len(lines), np.nan, np.nan, np.nan, None
+        else:
+            return [np.nan] * len(lines), [np.nan]*len(lines), [np.nan]*len(lines), np.nan, [np.nan] * len(lines), np.nan, np.nan, np.nan
 
     spectrum = spectrum[rec]
     errors = errors[rec]
@@ -420,19 +442,22 @@ def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_
 
     l_id = 1
     if len(lines) > 1:
-        t1 = lambda model: (model.mean_0 * lines[1]/lines[0])
-        gaussians[l_id].mean.tied = t1
-        gaussians[l_id].stddev.tied = tie_std
+        if not multicomp:
+            t1 = lambda model: (model.mean_0 * lines[1]/lines[0])
+            gaussians[l_id].mean.tied = t1
+            gaussians[l_id].stddev.tied = tie_std
         l_id += 1
     if len(lines) > 2:
-        t2 = lambda model: (model.mean_0 * lines[2] / lines[0])
-        gaussians[l_id].mean.tied = t2
-        gaussians[l_id].stddev.tied = tie_std
+        if not multicomp:
+            t2 = lambda model: (model.mean_0 * lines[2] / lines[0])
+            gaussians[l_id].mean.tied = t2
+            gaussians[l_id].stddev.tied = tie_std
         l_id += 1
     if len(lines) > 3:
-        t3 = lambda model: (model.mean_0 * lines[3] / lines[0])
-        gaussians[l_id].mean.tied = t3
-        gaussians[l_id].stddev.tied = tie_std
+        if not multicomp:
+            t3 = lambda model: (model.mean_0 * lines[3] / lines[0])
+            gaussians[l_id].mean.tied = t3
+            gaussians[l_id].stddev.tied = tie_std
 
     if fix_ratios is not None:
         ref_id = np.flatnonzero(np.array(fix_ratios)==1)[0]
@@ -454,15 +479,24 @@ def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_
             return [np.nan]*len(lines), np.nan, np.nan, np.nan, [np.nan]*len(lines), np.nan, np.nan, np.nan, None
         else:
             return [np.nan] * len(lines), np.nan, np.nan, np.nan, [np.nan] * len(lines), np.nan, np.nan, np.nan
-    vel = (res.mean_0/lines[0]-1)*3e5
+    if multicomp:
+        vel = [(res.__getattr__(f"mean_{l_id}")/lines[0]-1)*3e5 for l_id in range(len(lines))]
+    else:
+        vel = [(res.__getattr__(f"mean_{l_id}") / lines[l_id] - 1) * 3e5 for l_id in range(len(lines))]
 
     if not subtract_lsf:
-        disp = res.stddev_0 / lines[0] * 3e5
+        if multicomp:
+            disp = [(res.__getattr__(f"stddev_{l_id}")  / lines[0] * 3e5) for l_id in range(len(lines))]
+        else:
+            disp = [(res.__getattr__(f"stddev_{l_id}") / lines[l_id] * 3e5) for l_id in range(len(lines))]
     else:
-        disp = np.sqrt(res.stddev_0 ** 2 - mean_std ** 2) / lines[0] * 3e5  # - mean_std**2
+        if multicomp:
+            disp = [(np.sqrt(res.__getattr__(f"stddev_{l_id}") ** 2 - mean_std ** 2) / lines[0] * 3e5) for l_id in range(len(lines))]
+        else:
+            disp = [(np.sqrt(res.__getattr__(f"stddev_{l_id}") ** 2 - mean_std ** 2) / lines[l_id] * 3e5) for l_id in range(len(lines))]
 
     cont = res.__getattr__(f"amplitude_{len(lines)}").value
-    fluxes = [res.__getattr__(f"amplitude_{l_id}")*res.stddev_0*np.sqrt(2 * np.pi) for l_id in range(len(lines))]
+    fluxes = [res.__getattr__(f"amplitude_{l_id}")*res.__getattr__(f"stddev_{l_id}")*np.sqrt(2 * np.pi) for l_id in range(len(lines))]
     if fitter.fit_info['param_cov'] is None:
         cov_diag = np.zeros(shape=(len(lines)+3,), dtype=float)
         cov_diag[:] = np.nan
@@ -472,7 +506,7 @@ def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_
     if len(lines)>1:
         for l_id in range(len(lines)-1):
             fluxes_err.append(np.sqrt(
-                cov_diag[3+l_id] * res.stddev_0 ** 2 + res.__getattr__(f"amplitude_{l_id+1}") ** 2 * cov_diag[2]) * np.sqrt(
+                cov_diag[3+l_id] * res.__getattr__(f"stddev_{l_id}") ** 2 + res.__getattr__(f"amplitude_{l_id+1}") ** 2 * cov_diag[2]) * np.sqrt(
                 2 * np.pi))
     v_err = np.sqrt(cov_diag[1])/lines[0]*3e5
     sigma_err = np.sqrt(cov_diag[2]) / lines[0] * 3e5
@@ -2332,12 +2366,12 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
 
         res_output[f'SKY{int(sky_line)}_flux'] = fluxes[0]
         res_output[f'SKY{int(sky_line)}_fluxerr'] = fluxes_err[0]
-        res_output[f'SKY{int(sky_line)}_vel'] = vel
+        res_output[f'SKY{int(sky_line)}_vel'] = vel[0]
         res_output[f'SKY{int(sky_line)}_velerr'] = v_err
-        res_output[f'SKY{int(sky_line)}_disp'] = disp
+        res_output[f'SKY{int(sky_line)}_disp'] = disp[0]
         res_output[f'SKY{int(sky_line)}_disperr'] = sigma_err
-        res_output[f'SKY{int(sky_line)}_cont'] = disp
-        res_output[f'SKY{int(sky_line)}_conterr'] = sigma_err
+        res_output[f'SKY{int(sky_line)}_cont'] = cont
+        res_output[f'SKY{int(sky_line)}_conterr'] = cont_err
         # if int(np.round(sky_line)) == 6300:
         #     vel_sky_correct = vel
 
@@ -2345,23 +2379,27 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
         (line_name, wl_range, mask_wl, line_fit,
          include_comp, fix_ratios, _, save_plot_ids) = cur_line_params
         sel_wave = np.flatnonzero((wave >= wl_range[0]) & (wave <= wl_range[1]))
+        if len(line_name) > 1 and np.any(['_r' in ln or '_b' in ln for ln in line_name]):
+            multicomp = True
+        else:
+            multicomp = False
 
         if save_plot_ids is not None and spec_id in save_plot_ids:
             (fluxes, vel, disp, cont, fluxes_err, v_err,
              sigma_err, cont_err, plot_data) = fit_cur_spec((flux[sel_wave], error[sel_wave], lsf[sel_wave]),
                                                             wave=wave[sel_wave], mean_bounds=mean_bounds_1,
-                                                            lines=line_fit, fix_ratios=fix_ratios,
+                                                            lines=line_fit, fix_ratios=fix_ratios, multicomp=multicomp,
                                                             velocity=velocity+vel_sky_correct-vhel, return_plot_data=True)
             all_plot_data.append(plot_data)
         else:
             (fluxes, vel, disp, cont, fluxes_err, v_err,
              sigma_err, cont_err) = fit_cur_spec((flux[sel_wave], error[sel_wave], lsf[sel_wave]),
                                                  wave=wave[sel_wave], mean_bounds=mean_bounds_1,
-                                                            lines=line_fit, fix_ratios=fix_ratios,
+                                                            lines=line_fit, fix_ratios=fix_ratios, multicomp=multicomp,
                                                             velocity=velocity+vel_sky_correct-vhel, return_plot_data=False,
                                                  )
             all_plot_data.append(None)
-        if ~np.isfinite(vel):
+        if np.all([~np.isfinite(v) for v in vel]):
             continue
 
         for ln_id, ln in enumerate(line_name):
@@ -2371,9 +2409,9 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
 
             res_output[f'{ln}_flux'] = np.nansum(np.array(fluxes)[rec_comp])
             res_output[f'{ln}_fluxerr'] = np.sqrt(np.nansum(np.array(fluxes_err)[rec_comp]**2))
-            res_output[f'{ln}_vel'] = np.round(vel + vhel - vel_sky_correct,1)
+            res_output[f'{ln}_vel'] = np.round(np.array(vel)[rec_comp[0]] + vhel - vel_sky_correct,1)
             res_output[f'{ln}_velerr'] = np.round(v_err,1)
-            res_output[f'{ln}_disp'] = np.round(disp,1)
+            res_output[f'{ln}_disp'] = np.round(np.array(disp)[rec_comp[0]],1)
             res_output[f'{ln}_disperr'] = np.round(sigma_err,1)
             res_output[f'{ln}_cont'] = cont
             res_output[f'{ln}_conterr'] = cont_err
@@ -2656,6 +2694,165 @@ def process_single_rss(config, output_dir=None):
         table_fluxes.write(f_tab, overwrite=True, format='ascii.fixed_width_two_line')
         statuses.append(status_out)
     return np.all(statuses)
+
+
+def reconstruct_cube(config, w_dir=None):
+    statuses = []
+    if not config['imaging'].get('pxscale'):
+        pxscale_out = 15
+        log.warning("Cannot find pxscale in config. Use 15 arcsec")
+    else:
+        pxscale_out = float(config['imaging'].get('pxscale'))
+    if config['imaging'].get('r_lim'):
+        r_lim = config['imaging'].get('r_lim')
+    else:
+        log.warning("Cannot find r_lim in config. Use 50 arcsec")
+        r_lim = 50
+    if config['imaging'].get('sigma'):
+        sigma = config['imaging'].get('sigma')
+    else:
+        log.warning("Cannot find sigma in config. Use 2 arcsec")
+        sigma = 2
+    for cur_obj in config['object']:
+        log.info(f"Constructing data cube for {cur_obj.get('name')} in {config['cube_reconstruction'].get('suffix')}.")
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        outfile = os.path.join(cur_wdir, cur_obj.get('name')+
+                               f"_cube_{config['cube_reconstruction'].get('suffix')}.fits" )
+        if not os.path.exists(cur_wdir):
+            log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
+            statuses.append(False)
+            continue
+        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+        if not os.path.isfile(f_tab_summary):
+            log.error(f"File {f_tab_summary} does not exist. Have you run 'analyse_rss' step first?")
+            statuses.append(False)
+            continue
+
+        table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
+                                  converters={'sourceid': str, 'fluxcorr': str, 'vhel_corr': str})
+
+        vel = cur_obj.get('velocity')
+        ras = table_fluxes['fib_ra']
+        decs = table_fluxes['fib_dec']
+
+        # === Define rectangular grid
+        dec_0 = np.min(decs) - 37. / 2 / 3600
+        dec_1 = np.max(decs) + 37. / 2 / 3600
+        ra_0 = np.max(ras) + 37. / 2 / 3600 / np.cos(dec_1 / 180 * np.pi)
+        ra_1 = np.min(ras) - 37. / 2 / 3600 / np.cos(dec_0 / 180 * np.pi)
+
+        ra_cen = (ra_0 + ra_1) / 2.
+        dec_cen = (dec_0 + dec_1) / 2.
+        nx = np.ceil((ra_0 - ra_1) * np.cos(dec_cen / 180. * np.pi) / pxscale_out * 3600. / 2.).astype(int) * 2 + 1
+        ny = np.ceil((dec_1 - dec_0) / pxscale_out * 3600. / 2.).astype(int) * 2 + 1
+        ra_0 = np.round(ra_cen + (nx - 1) / 2 * pxscale_out / 3600. / np.cos(dec_cen / 180. * np.pi), 6)
+        dec_0 = np.round(dec_cen - (ny - 1) / 2 * pxscale_out / 3600., 6)
+        ra_cen = np.round(ra_cen, 6)
+        dec_cen = np.round(dec_cen, 6)
+        # Create a new WCS object.  The number of axes must be set
+        # from the start
+        wcs_out = WCS(naxis=2)
+        wcs_out.wcs.crpix = [(nx - 1) / 2 + 1, (ny - 1) / 2 + 1]
+        wcs_out.wcs.cdelt = np.array([-np.round(pxscale_out / 3600., 6), np.round(pxscale_out / 3600., 6)])
+        wcs_out.wcs.crval = [ra_cen, dec_cen]
+        wcs_out.wcs.cunit = ['deg', 'deg']
+        wcs_out.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+
+        shape_out = (ny, nx)
+        grid_scl = wcs_out.proj_plane_pixel_scales()[0].value * 3600.
+
+        log.info(f"Grid scale: {np.round(grid_scl, 1)}, output shape: {nx}x{ny}, "
+                 f"RA range: {np.round(ra_1, 4)} - {np.round(ra_0, 4)}, "
+                 f"DEC range: {np.round(dec_0, 4)} - {np.round(dec_1, 4)} ")
+
+        # === Extract wl information from first pointing
+        source_ids = table_fluxes['sourceid'][0].split(', ')
+        pointing, expnum, fib_id = source_ids[0].split('_')
+        expnum = int(expnum)
+        rssfile = os.path.join(cur_wdir, pointing,
+                               f'lvmSFrame-{expnum:0>8}.fits')
+        with (fits.open(rssfile) as rss):
+            wave = ((np.arange(rss['FLUX'].header['NAXIS1']) -
+                     rss['FLUX'].header['CRPIX1']) * rss['FLUX'].header['CDELT1'] +
+                    rss['FLUX'].header['CRVAL1'])
+            try:
+                rec_wave = np.flatnonzero((wave>=config['cube_reconstruction']['wl_range'][0]) &
+                                          (wave<=config['cube_reconstruction']['wl_range'][1]))
+            except KeyError:
+                log.error('Something wrong with "cube_reconstruction" in config')
+                statuses.append(False)
+                continue
+            if len(rec_wave) == 0:
+                log.error('Wavelength range is inconsistent with the data')
+                statuses.append(False)
+                continue
+            crval = wave[rec_wave][0]
+            wave_dict = {"CRVAL3": crval,
+                     'CDELT3': rss['FLUX'].header['CDELT1'],
+                     'CRPIX3': 1,
+                     "CTYPE3": rss['FLUX'].header['CTYPE1'],
+                     'CUNIT3': 'Angstrom',
+                     'BUNIT': rss['FLUX'].header['BUNIT']}
+
+
+        # === Create container for data cube
+        fake_data = np.zeros((100, 100), dtype=np.float64)
+        hdu = fits.PrimaryHDU(data=fake_data)
+        header = hdu.header
+        while len(header) < (36 * 4 - 1):
+            header.append()
+
+        header.update(wcs_out.to_header())
+        # header['BITPIX'] = 8
+        header['NAXIS'] = 3
+        header['NAXIS1'] = shape_out[1]
+        header['NAXIS2'] = shape_out[0]
+        header['NAXIS3'] = len(rec_wave)
+        for kw in wave_dict.keys():
+            header[kw] = wave_dict[kw]
+
+        header.tofile(outfile, overwrite=True)
+        fluxes = None
+        for row_id, source_ids in tqdm(enumerate(table_fluxes['sourceid']), total=len(table_fluxes),
+                                       desc='Fibers done:', ascii=True):
+            source_ids = source_ids.split(', ')
+            fluxcorrs = np.array(table_fluxes['fluxcorr'][row_id].split(', ')).astype(float)
+            vhel_corr = np.array(table_fluxes['vhel_corr'][row_id].split(', ')).astype(float)
+            cur_fluxes = None
+            for cur_ind, source_id in enumerate(source_ids):
+                pointing, expnum, fib_id = source_id.split('_')
+                expnum = int(expnum)
+                fib_id = int(fib_id)
+                if config['imaging'].get('include_sky'):
+                    rssfile = os.path.join(cur_wdir, pointing, f'lvmCFrame-{expnum:0>8}.fits')
+                else:
+                    rssfile = os.path.join(cur_wdir, pointing, f'lvmSFrame-{expnum:0>8}.fits')
+                with fits.open(rssfile) as rss:
+                    flux = rss['FLUX'].data[fib_id,rec_wave] * fluxcorrs[cur_ind]
+                    delta_v = vhel_corr[cur_ind] - vhel_corr[0]
+                    if abs(delta_v) > 3.:
+                        flux = np.interp(wave[rec_wave], wave[rec_wave]*(1-delta_v/3e5), flux)
+                    if cur_fluxes is None:
+                        cur_fluxes = flux
+                    else:
+                        cur_fluxes = np.vstack([cur_fluxes, flux])
+                if len(cur_fluxes.shape) == 2 and cur_fluxes.shape[0] > 1:
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore",
+                        )
+                        cur_fluxes = np.nanmean(sigma_clip(cur_fluxes, sigma=1.3, axis=0, masked=False), axis=0)
+            if fluxes is None:
+                fluxes = cur_fluxes
+            else:
+                fluxes = np.vstack([fluxes, cur_fluxes])
+
+        shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs,
+                         show_values=fluxes, r_lim=r_lim, sigma=sigma,
+                         cube=True, outfile=outfile, header=header)
+        statuses.append(True)
+    status_out = np.all(statuses)
+    return status_out
 
 
 def do_imaging(config, output_dir=None, use_shepard=False):
