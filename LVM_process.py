@@ -100,6 +100,15 @@ def LVM_process(config_filename=None, output_dir=None):
         log.error("Can't find any object. Nothing to process.")
         return
 
+    # === Create folders for different objects/pointings
+    cur_wdir = output_dir
+    if cur_wdir is None:
+        cur_wdir = config.get('default_output_dir')
+    status = create_folders_tree(config, w_dir=cur_wdir)
+    if not status:
+        log.error("Critical errors occurred. Exit.")
+        return
+
     # === Step 1 - download all raw files listed in config from SAS. After that - regenerates metadata
     if config['steps'].get('download'):
         status = download_from_sas(config)
@@ -262,6 +271,29 @@ def LVM_process(config_filename=None, output_dir=None):
 
     log.info("Done!")
 
+def create_folders_tree(config, w_dir=None):
+    try:
+        for cur_obj in config['object']:
+            check_dir = os.path.join(w_dir, cur_obj.get('name'))
+            if not os.path.exists(check_dir):
+                os.makedirs(check_dir)
+                uid = os.stat(check_dir).st_uid
+                if server_group_id is not None:
+                    os.chown(check_dir, uid=uid, gid=server_group_id)
+                os.chmod(check_dir, 0o775)
+            for cur_pointing in config['pointing']:
+                check_dir = os.path.join(w_dir, cur_obj.get('name'), cur_pointing.get('name'))
+                if not os.path.exists(check_dir):
+                    os.makedirs(check_dir)
+                    uid = os.stat(check_dir).st_uid
+                    if server_group_id is not None:
+                        os.chown(check_dir, uid=uid, gid=server_group_id)
+                    os.chmod(check_dir, 0o775)
+        status=True
+    except Exception as e:
+        log.error("Something wrong with creation of the work folders tree:" + str(e))
+        status = False
+    return status
 def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10., 10.),
                        ax=None, return_plot_data=False, subtract_lsf=True, max_n_comp=None, tie_disp=None, tie_vel=None):
     """
@@ -1059,10 +1091,10 @@ def copy_reduced_data(config, output_dir=None):
                             short_tileid = '0000XX'
                         else:
                             short_tileid = tileids[exp_ind][:4] + 'XX'
-                    source_files.append(os.path.join(drp_results_dir, tileids[exp_ind], short_tileid,
+                    source_files.append(os.path.join(drp_results_dir, short_tileid, str(tileids[exp_ind]),
                                                      str(data['mjd']), f'lvmSFrame-{exp:08d}.fits'))
                     if config['reduction'].get('copy_cframes'):
-                        source_files.append(os.path.join(drp_results_dir, tileids[exp_ind], short_tileid,
+                        source_files.append(os.path.join(drp_results_dir, short_tileid, str(tileids[exp_ind]),
                                                          str(data['mjd']), f'lvmCFrame-{exp:08d}.fits'))
             if len(source_files) == 0:
                 log.warning(f"Nothing to copy for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
