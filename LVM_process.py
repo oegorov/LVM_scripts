@@ -8,36 +8,29 @@ except ModuleNotFoundError:
 import os
 import logging
 import glob
-from copy import deepcopy
 
 import numpy as np
 np.seterr(divide='ignore', invalid='ignore')
 import gc
 import sys
-from tqdm import tqdm  # as tqdm
+from tqdm import tqdm
 import shutil
 
 import multiprocessing as mp
-import yaml
-from astropy.io import fits, ascii
+from astropy.io import fits
 import astropy.units as u
 import matplotlib.pyplot as plt
 from astropy.wcs import WCS
-from reproject import reproject_interp
-from reproject.mosaicking import find_optimal_celestial_wcs
 from functools import partial
 from astropy.table import Table, vstack, Column, join
 from astropy.coordinates import SkyCoord
 from astropy.modeling import fitting, models
-from astropy.convolution import convolve_fft, kernels
-from scipy.ndimage import median_filter, gaussian_filter, percentile_filter
+from scipy.ndimage import median_filter
 from astropy.stats import sigma_clip
 from astropy.time import Time
 from astropy.coordinates import EarthLocation
 from matplotlib.gridspec import GridSpec
-from scipy.interpolate import interp1d
 from matplotlib.backends.backend_pdf import PdfPages
-from lmfit import Model, Parameter, Minimizer
 from lmfit.models import GaussianModel, ConstantModel
 
 import warnings
@@ -281,7 +274,7 @@ def create_folders_tree(config, w_dir=None):
                 if server_group_id is not None:
                     os.chown(check_dir, uid=uid, gid=server_group_id)
                 os.chmod(check_dir, 0o775)
-            for cur_pointing in config['pointing']:
+            for cur_pointing in cur_obj['pointing']:
                 check_dir = os.path.join(w_dir, cur_obj.get('name'), cur_pointing.get('name'))
                 if not os.path.exists(check_dir):
                     os.makedirs(check_dir)
