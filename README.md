@@ -18,4 +18,23 @@ For this purpose, this script takes the information about tiles/exposures of int
 
 *LVM_config.toml* shows an example of the TOML config file
 
+## Requirements and usage 
+#### These libraries must be installed: 
+lmfit, tomllib, lvmdrp, sdss-access, tqdm  + standard astronomical libraries (astropy, numpy, scipy, matplotlib) 
+
+`pip install lmfit tomllib sdss-access tqdm astropy` must work + check how to install the latest version of lvmdrp
+
+#### Modify code + setup the folder structure
+
+1. Raw or reduced/analysed files will be downloaded from SAS and stored at `$SAS_BASE_DIR/sdsswork/...` (path mimicking the structure at the SAS). Thus make sure that the same structure exists on your laptop/server for Raw data, AGCam images, Reduced data and DAP results
+2. Define all environmental variables necessary for `lvmdrp`, including the root directory `$SAS_BASE_DIR`
+3. Setup access to the SDSS data through the `.netrc` file (see wiki)
+4. Change few lines of the code in the `=== Setup ===` block of the **LVM_process.py**:
+   1. `red_data_version` - current version of the reduced data on SAS
+   2. `dap_version` - current version of the DAP-analysed data on SAS
+   3. `drp_version` - your LOCAL version of the lvmdrp
+   4. `server_group_id` - ID of the group to be used for changing access to the new files and folders. If you wish to run `chgrp` to all newly created files and folders, provide the correct group ID according to the setup on your machine. Use None to skip this.
+
+If everything is correctly installed/setup, then just type `LVM_process.py LVM_config.toml` - and wait for the results. 
+ 
 **More description is TBA at some point...** 
