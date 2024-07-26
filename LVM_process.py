@@ -60,6 +60,7 @@ dap_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm'
 drp_results_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux', drp_version)
 server_group_id = 10699  # ID of the group on the server to run 'chgrp' on all new/downloaded files. Skipped if None
 obs_loc = EarthLocation.of_site('lco')  # Observatory location
+fiber_d = 35.3 #diameter of the fiber in arcsec
 
 dap_results_correspondence = {
     "Ha": 6562.85, 'Hb': 4861.36, 'SII6717': 6716.44, "SII6731": 6730.82, 'NII6584': 6583.45, 'SIII9532': 9531.1,
@@ -350,7 +351,12 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
 
         components = []
         my_model = None
-
+        min_lid_tie_vel = -1
+        min_lid_tie_disp = -1
+        if np.any(tie_vel):
+            min_lid_tie_vel = np.flatnonzero(tie_vel)[0]
+        if np.any(tie_disp):
+            min_lid_tie_disp = np.flatnonzero(tie_disp)[0]
         for l_id, l in enumerate(lines):
             for cmp in range(cur_n_comps[l_id]):
                 ids_with_this_number_of_comp = np.flatnonzero(cur_n_comps >= (cmp+1))
@@ -361,8 +367,8 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
                     pars.update(components[-1].make_params())
 
                 pars[f"gaus{l_id}{cmp}_amplitude"].set(value=flux_guess, min=0, max=flux_guess * 10, vary=True)
-                if (cmp == 0) and (l_id>0) and tie_vel[l_id]:
-                    pars[f"gaus{l_id}{cmp}_center"].set(expr=f'gaus00_center*{lines[l_id]/lines[0]}')
+                if (cmp == 0) and (l_id > min_lid_tie_vel) and tie_vel[l_id]:
+                    pars[f"gaus{l_id}{cmp}_center"].set(expr=f'gaus{min_lid_tie_vel}0_center*{lines[l_id]/lines[min_lid_tie_vel]}')
                 elif (cmp>0) and (l_id > ids_with_this_number_of_comp[0]):
                     pars[f"gaus{l_id}{cmp}_center"].set(
                         expr=f'gaus{ids_with_this_number_of_comp[0]}{cmp}_center*{lines[ids_with_this_number_of_comp[cmp]]/lines[0]}')
@@ -378,13 +384,13 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
                                                         min=l*(1+velocity/3e5)+mean_bounds[0],
                                                         max=l*(1+velocity/3e5)+mean_bounds[1], vary=True)
 
-                if (cmp == 0) and (l_id>0) and tie_disp[l_id]:
-                    pars[f"gaus{l_id}{cmp}_sigma"].set(expr=f'gaus00_sigma')
+                if (cmp == 0) and (l_id>min_lid_tie_disp) and tie_disp[l_id]:
+                    pars[f"gaus{l_id}{cmp}_sigma"].set(expr=f'gaus{min_lid_tie_disp}0_sigma')
                 elif (cmp>0) and (l_id > ids_with_this_number_of_comp[0]):
                     pars[f"gaus{l_id}{cmp}_sigma"].set(
                         expr=f'gaus{ids_with_this_number_of_comp[0]}{cmp}_sigma')
                 else:
-                    pars[f"gaus{l_id}{cmp}_sigma"].set(value=mean_std, min=0.6 * mean_std, max=10 * mean_std, vary=True)
+                    pars[f"gaus{l_id}{cmp}_sigma"].set(value=mean_std, min=0.6 * mean_std, max=15 * mean_std, vary=True)
 
                 if my_model is None:
                     my_model = components[0]
@@ -426,10 +432,10 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
             disp_err = [(np.array(res.params[f'gaus{l_id}{0}_sigma'].stderr).astype(float) / lines[l_id]) * 3e5 for l_id in range(len(lines))]
             vel = [(np.array(res.params[f'gaus{l_id}{0}_center'].value).astype(float) / lines[l_id] - 1) * 3e5 for l_id in range(len(lines))]
             vel_err = [(np.array(res.params[f'gaus{l_id}{0}_center'].stderr).astype(float) / lines[l_id]) * 3e5 for l_id in range(len(lines))]
-            fluxes = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].value).astype(float)*1e-16 for l_id in range(len(lines))]
-            fluxes_err = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].stderr).astype(float)*1e-16 for l_id in range(len(lines))]
-            cont = [np.array(res.params[f'contin_c'].value).astype(float)*1e-16]*len(lines)
-            cont_err = [np.array(res.params[f'contin_c'].stderr).astype(float)*1e-16]*len(lines)
+            fluxes = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2 for l_id in range(len(lines))]
+            fluxes_err = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].stderr).astype(float)*1e-16/np.pi/(fiber_d/2)**2 for l_id in range(len(lines))]
+            cont = [np.array(res.params[f'contin_c'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2]*len(lines)
+            cont_err = [np.array(res.params[f'contin_c'].stderr).astype(float)*1e-16/np.pi/(fiber_d/2)**2]*len(lines)
 
             other_comps = [None, None]
             if max(max_n_comp) > 1:
@@ -463,8 +469,8 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
 
                     other_comps[ind]['vel'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_center'].value).astype(float) / lines[l_id] - 1) * 3e5
                     other_comps[ind]['vel_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_center'].stderr).astype(float) / lines[l_id]) * 3e5
-                    other_comps[ind]['fluxes'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_amplitude'].value).astype(float)*1e-16
-                    other_comps[ind]['fluxes_err'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_amplitude'].stderr).astype(float)*1e-16
+                    other_comps[ind]['fluxes'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_amplitude'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2
+                    other_comps[ind]['fluxes_err'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_amplitude'].stderr).astype(float)*1e-16/np.pi/(fiber_d/2)**2
 
                     if other_comps[ind]['fluxes'][l_id] > fluxes[l_id]:
                         tmp = np.copy(fluxes[l_id])
@@ -485,6 +491,7 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
                         tmp = np.copy(disp_err[l_id])
                         disp_err[l_id] = np.copy(other_comps[ind]['disp_err'][l_id])
                         other_comps[ind]['disp_err'][l_id] = tmp
+
     if ax is not None:
         ax.plot(wave, spectrum, 'k-', label='Obs')
         ax.plot(wave, res.eval(**res.best_values, x=wave), 'r--', label=f'Fit')
@@ -1078,7 +1085,7 @@ def copy_reduced_data(config, output_dir=None):
                             if (int(tileids[exp_ind]) < 1027000) & (int(tileids[exp_ind]) != 11111):
                                 tileids[exp_ind] = str(int(tileids[exp_ind])+27748)
 
-                        if tileids[exp_ind] == '1111':
+                        if (tileids[exp_ind] == '1111') or (tileids[exp_ind] == '11111'):
                             short_tileid = '0011XX'
                         elif tileids[exp_ind] == '999':
                             short_tileid = '0000XX'
@@ -1388,8 +1395,8 @@ def process_all_rss(config, w_dir=None):
                         "Information about fibers won't change, but the fluxes will be updated when needed")
         else:
             tab_summary = Table(data=None, names=['fib_ra', 'fib_dec', 'ra_round', 'dec_round',
-                                                  'sourceid', 'fluxcorr', 'vhel_corr'],
-                                dtype=(float, float, float, float, 'object', 'object', 'object'))
+                                                  'sourceid', 'fluxcorr_b','fluxcorr_r','fluxcorr_z', 'vhel_corr'],
+                                dtype=(float, float, float, float, 'object', 'object', 'object', 'object', 'object'))
 
             log.info("Selecting unique fibers")
             for cur_pointing in cur_obj['pointing']:
@@ -1400,11 +1407,17 @@ def process_all_rss(config, w_dir=None):
                         exps = data['exp']
 
                     if not data.get('flux_correction'):
-                        cur_flux_corr = [1.] * len(exps)
+                        cur_flux_corr_b = [1.] * len(exps)
+                        cur_flux_corr_r = [1.] * len(exps)
+                        cur_flux_corr_z = [1.] * len(exps)
                     else:
-                        cur_flux_corr = data['flux_correction']
-                    if isinstance(cur_flux_corr, float) or isinstance(cur_flux_corr, int):
-                        cur_flux_corr = [cur_flux_corr]
+                        cur_flux_corr_b = data['flux_correction']
+                        cur_flux_corr_r = data['flux_correction']
+                        cur_flux_corr_z = data['flux_correction']
+                    if isinstance(cur_flux_corr_r, float) or isinstance(cur_flux_corr_r, int):
+                        cur_flux_corr_b = [cur_flux_corr_b]
+                        cur_flux_corr_r = [cur_flux_corr_r]
+                        cur_flux_corr_z = [cur_flux_corr_z]
 
                     for exp_id, exp in enumerate(exps):
                         cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'lvmSFrame-{exp:08d}.fits')
@@ -1436,6 +1449,23 @@ def process_all_rss(config, w_dir=None):
                             if config['imaging'].get('skip_bad_fibers'):
                                 sci = sci & (cur_table_fibers['fibstatus'] == 0)
                             sci = np.flatnonzero(sci)
+                            if rss[0].header.get('STDSENMR') and rss[0].header.get('SCISENMR'):
+                                if (rss[0].header['STDSENRR']/rss[0].header['STDSENMR'] > 0.2) or abs(np.log10(float(rss[0].header['SCISENMR'])/float(rss[0].header['STDSENMR'])))>0.1:
+                                    log.warning(f"{exp} has potential problems with flux calib: "
+                                                f"stderr/med={np.round(rss[0].header['STDSENRB']/rss[0].header['STDSENMB'],2)}, "
+                                                f"{np.round(rss[0].header['STDSENRR']/rss[0].header['STDSENMR'],2)}, "
+                                                f"{np.round(rss[0].header['STDSENRZ']/rss[0].header['STDSENMZ'],2)}, "
+                                                f"sci/std = {np.round(float(rss[0].header['SCISENMB'])/float(rss[0].header['STDSENMB']),2)}, "
+                                                f"{np.round(float(rss[0].header['SCISENMR'])/float(rss[0].header['STDSENMR']),2)},"
+                                                f"{np.round(float(rss[0].header['SCISENMZ'])/float(rss[0].header['STDSENMZ']),2)} in b,r,z")
+
+                                    cur_flux_corr_r[exp_id] = float(rss[0].header['SCISENMR']) / float(
+                                        rss[0].header['STDSENMR'])
+                                    cur_flux_corr_b[exp_id] = float(rss[0].header['SCISENMB']) / float(
+                                        rss[0].header['STDSENMB'])
+                                    cur_flux_corr_z[exp_id] = float(rss[0].header['SCISENMZ']) / float(
+                                        rss[0].header['STDSENMZ'])
+
                             try:
                                 radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
                                                          dec=rss[0].header['POSCIDE'],
@@ -1462,8 +1492,12 @@ def process_all_rss(config, w_dir=None):
                                                        Column(np.array([f'{cur_pointing["name"]}_{exp:08d}_{cur_fibid:04d}'
                                                                         for cur_fibid in cur_table_fibers[sci]["fiberid"]]),
                                                               name='sourceid', dtype=object),
-                                                       Column(np.array([str(cur_flux_corr[exp_id])] * len(sci)),
-                                                              name='fluxcorr', dtype=object),
+                                                       Column(np.array([str(cur_flux_corr_b[exp_id])] * len(sci)),
+                                                              name='fluxcorr_b', dtype=object),
+                                                       Column(np.array([str(cur_flux_corr_r[exp_id])] * len(sci)),
+                                                              name='fluxcorr_r', dtype=object),
+                                                       Column(np.array([str(cur_flux_corr_z[exp_id])] * len(sci)),
+                                                              name='fluxcorr_z', dtype=object),
                                                        Column(np.array([str(vcorr)]*len(sci)),name='vhel_corr',
                                                               dtype=object)
                                                       ))
@@ -1488,7 +1522,8 @@ def process_all_rss(config, w_dir=None):
                     if len(rec) <= 1:
                         continue
                     tab_summary["sourceid"][rec[0]] = ', '.join(tab_summary["sourceid"][rec])
-                    tab_summary["fluxcorr"][rec[0]] = ', '.join(tab_summary["fluxcorr"][rec])
+                    for chan in ['_b', '_r', '_z']:
+                        tab_summary[f"fluxcorr{chan}"][rec[0]] = ', '.join(tab_summary[f"fluxcorr{chan}"][rec])
                     tab_summary["vhel_corr"][rec[0]] = ', '.join(tab_summary["vhel_corr"][rec])
                     rec_remove.extend(rec[1:])
                 if len(rec_remove)>0:
@@ -1501,7 +1536,8 @@ def process_all_rss(config, w_dir=None):
         #==============================
         log.info("Analysing spectra")
         table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
-                                  converters={'sourceid': str, 'fluxcorr': str, 'vhel_corr': str})
+                                  converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                              'fluxcorr_z': str, 'vhel_corr': str})
         mean_bounds = (-30, 30)
         vel = cur_obj.get('velocity')
         line_fit_params = []
@@ -1592,7 +1628,8 @@ def process_all_rss(config, w_dir=None):
 
         nprocs = np.min([np.max([config.get('nprocs'), 1]), len(table_fluxes)])
         if len(line_quicksum_params) > 0:
-            params = zip(table_fluxes['sourceid'], table_fluxes['fluxcorr'],
+            params = zip(table_fluxes['sourceid'], table_fluxes['fluxcorr_b'], table_fluxes['fluxcorr_r'],
+                         table_fluxes['fluxcorr_z'],
                          table_fluxes['vhel_corr'], np.arange(len(table_fluxes)))
             with mp.Pool(processes=nprocs) as pool:
                 for status, res, spec_id in tqdm(
@@ -1622,7 +1659,8 @@ def process_all_rss(config, w_dir=None):
 
         if len(line_fit_params) > 0:
             all_plot_data = []
-            params = zip(table_fluxes['sourceid'], table_fluxes['fluxcorr'],
+            params = zip(table_fluxes['sourceid'], table_fluxes['fluxcorr_b'], table_fluxes['fluxcorr_r'],
+                         table_fluxes['fluxcorr_z'],
                          table_fluxes['vhel_corr'], np.arange(len(table_fluxes)))
             with mp.Pool(processes=nprocs) as pool:
                 for status, fit_res, plot_data, spec_id in tqdm(
@@ -1656,9 +1694,10 @@ def process_all_rss(config, w_dir=None):
                 gs = GridSpec(6, 4, fig, 0.1, 0.1, 0.99, 0.95, wspace=0.1, hspace=0.1,
                               width_ratios=[1] * 4, height_ratios=[1] * 6)
                 cur_ax_id = 0
+
                 for cur_id in range(len(all_plot_data)):
                     # TODO This is very rough fix
-                    if all_plot_data[cur_id][0] is None:
+                    if all_plot_data[cur_id] is None or (all_plot_data[cur_id][0] is None):
                         continue
                     ax = fig.add_subplot(gs[cur_ax_id])
 
@@ -1679,9 +1718,11 @@ def process_all_rss(config, w_dir=None):
 
 
 def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sky=False, line_params=None, velocity=0):
-    source_ids, flux_cors, vhel_corrs, spec_id = params
+    source_ids, flux_cors_b, flux_cors_r, flux_cors_z, vhel_corrs, spec_id = params
     source_ids = source_ids.split(', ')
-    flux_cors = flux_cors.split(', ')
+    flux_cors_b = flux_cors_b.split(', ')
+    flux_cors_r = flux_cors_r.split(', ')
+    flux_cors_z = flux_cors_z.split(', ')
     vhel_corrs = vhel_corrs.split(', ')
     wave = None
     for ind, source_id in enumerate(source_ids):
@@ -1702,13 +1743,20 @@ def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sk
                 flux = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
                 ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
 
+            rec_b = wave < 5700
+            rec_r = (wave >= 5700) & (wave < 7000)
+            rec_z = wave >= 7000
             if partial_sky:
                 flux[ind, :] = ((hdu['FLUX'].data[fib_id, :] + hdu['SKY'].data[fib_id, :]) -
                                 mask_sky_at_bright_lines(hdu['SKY'].data[fib_id, :], wave=wave,
                                                          vel=velocity, mask=hdu['MASK'].data[fib_id, :]))
             else:
-                flux[ind, :] = hdu['FLUX'].data[fib_id, :] * float(flux_cors[ind])
-            ivar[ind, :] = hdu['IVAR'].data[fib_id, :] / float(flux_cors[ind]) ** 2
+                flux[ind, rec_b] = hdu['FLUX'].data[fib_id, rec_b] * float(flux_cors_b[ind])
+                flux[ind, rec_r] = hdu['FLUX'].data[fib_id, rec_r] * float(flux_cors_r[ind])
+                flux[ind, rec_z] = hdu['FLUX'].data[fib_id, rec_z] * float(flux_cors_z[ind])
+            ivar[ind, rec_b] = hdu['IVAR'].data[fib_id, rec_b] / float(flux_cors_b[ind]) ** 2
+            ivar[ind, rec_r] = hdu['IVAR'].data[fib_id, rec_r] / float(flux_cors_r[ind]) ** 2
+            ivar[ind, rec_z] = hdu['IVAR'].data[fib_id, rec_z] / float(flux_cors_z[ind]) ** 2
             flux[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
 
         if ind > 1:
@@ -1780,8 +1828,8 @@ def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sk
                     if np.isfinite(cwave1):
                         flux_rss -= (p(cwave1) * len(sel_wave1) * dw)
 
-        res_out[f'{line_name}_flux'] = flux_rss
-        res_out[f'{line_name}_fluxerr'] = np.sqrt(error_rss)
+        res_out[f'{line_name}_flux'] = flux_rss/np.pi/(fiber_d/2)**2
+        res_out[f'{line_name}_fluxerr'] = np.sqrt(error_rss)/np.pi/(fiber_d/2)**2
     return True, res_out, spec_id
 
 def derive_radec_ifu(mjd, expnum, first_exp=None, objname=None, pointing_name=None, w_dir=None):
@@ -1890,9 +1938,9 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
 
     ra_cen = (ra_0 + ra_1)/2.
     dec_cen = (dec_0 + dec_1) / 2.
-    nx = np.ceil((ra_0 - ra_1)*np.cos(dec_cen/180.*np.pi)/pxscale_out*3600./2.).astype(int)*2+1
+    nx = np.ceil((ra_0 - ra_1)*max([np.cos(dec_0/180.*np.pi),np.cos(dec_1/180.*np.pi)])/pxscale_out*3600./2.).astype(int)*2+1
     ny = np.ceil((dec_1 - dec_0) / pxscale_out * 3600./2.).astype(int)*2+1
-    ra_0 = np.round(ra_cen + (nx-1)/2 * pxscale_out / 3600. / np.cos(dec_cen/180.*np.pi),6)
+    ra_0 = np.round(ra_cen + (nx-1)/2 * pxscale_out / 3600. / max([np.cos(dec_0/180.*np.pi),np.cos(dec_1/180.*np.pi)]),6)
     dec_0 = np.round(dec_cen - (ny - 1) / 2 * pxscale_out/ 3600., 6)
     ra_cen = np.round(ra_cen, 6)
     dec_cen = np.round(dec_cen, 6)
@@ -1930,18 +1978,18 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         for ln in lns:
             if values is None:
                 if f'{ln}_flux' in table_fluxes.colnames:
-                    values = table_fluxes[f'{ln}_flux'] / (np.pi * lvm_fiber_diameter ** 2 / 4)
+                    values = table_fluxes[f'{ln}_flux'] #/ (np.pi * lvm_fiber_diameter ** 2 / 4)
                 else:
                     continue
             else:
                 if f'{ln}_flux' in table_fluxes.colnames:
-                    values = np.vstack([values.T, table_fluxes[f'{ln}_flux'].T / (np.pi * lvm_fiber_diameter ** 2 / 4)]).T
+                    values = np.vstack([values.T, table_fluxes[f'{ln}_flux'].T]).T #/ (np.pi * lvm_fiber_diameter ** 2 / 4)
                 else:
                     continue
             names_out.append(f'{ln}_flux')
             for suff in ['vel', 'disp', 'cont']:
                 if suff == 'cont':
-                    fluxcorr = (np.pi * lvm_fiber_diameter ** 2 / 4)
+                    fluxcorr = 1#(np.pi * lvm_fiber_diameter ** 2 / 4)
                 else:
                     fluxcorr = 1
                 if f'{ln}_{suff}' in table_fluxes.colnames:
@@ -1967,9 +2015,11 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
 def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sky=False, partial_sky=False,
                               line_fit_params=None, mean_bounds=None, single_rss=True, velocity=0):
     if not single_rss:
-        source_ids, flux_cors, vhel_corrs, spec_id = params
+        source_ids, flux_cors_b, flux_cors_r, flux_cors_z, vhel_corrs, spec_id = params
         source_ids = source_ids.split(', ')
-        flux_cors = flux_cors.split(', ')
+        flux_cors_b = flux_cors_b.split(', ')
+        flux_cors_r = flux_cors_r.split(', ')
+        flux_cors_z = flux_cors_z.split(', ')
         vhel_corrs = vhel_corrs.split(', ')
         wl_grid = None
         for ind, source_id in enumerate(source_ids):
@@ -1992,16 +2042,26 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
                     ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
                     sky = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
                     sky_ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
-
+                rec_b = wl_grid < 5700
+                rec_r = (wl_grid >= 5700) & (wl_grid < 7000)
+                rec_z = wl_grid >= 7000
                 if partial_sky:
                     flux[ind, :] = ((hdu['FLUX'].data[fib_id, :] + hdu['SKY'].data[fib_id, :]) -
                      mask_sky_at_bright_lines(hdu['SKY'].data[fib_id, :], wave=wl_grid,
                                               vel=velocity, mask=hdu['MASK'].data[fib_id, :]))
                 else:
-                    flux[ind, :] = hdu['FLUX'].data[fib_id, :] * float(flux_cors[ind])
-                ivar[ind, :] = hdu['IVAR'].data[fib_id, :] / float(flux_cors[ind]) ** 2
-                sky[ind, :] = hdu['SKY'].data[fib_id, :] * float(flux_cors[ind])
-                sky_ivar[ind, :] = hdu['SKY_IVAR'].data[fib_id, :] / float(flux_cors[ind]) ** 2
+                    flux[ind, rec_b] = hdu['FLUX'].data[fib_id, rec_b] * float(flux_cors_b[ind])
+                    flux[ind, rec_r] = hdu['FLUX'].data[fib_id, rec_r] * float(flux_cors_r[ind])
+                    flux[ind, rec_z] = hdu['FLUX'].data[fib_id, rec_z] * float(flux_cors_z[ind])
+                ivar[ind, rec_b] = hdu['IVAR'].data[fib_id, rec_b] / float(flux_cors_b[ind]) ** 2
+                sky[ind, rec_b] = hdu['SKY'].data[fib_id, rec_b] * float(flux_cors_b[ind])
+                sky_ivar[ind, rec_b] = hdu['SKY_IVAR'].data[fib_id, rec_b] / float(flux_cors_b[ind]) ** 2
+                ivar[ind, rec_r] = hdu['IVAR'].data[fib_id, rec_r] / float(flux_cors_r[ind]) ** 2
+                sky[ind, rec_r] = hdu['SKY'].data[fib_id, rec_r] * float(flux_cors_r[ind])
+                sky_ivar[ind, rec_r] = hdu['SKY_IVAR'].data[fib_id, rec_r] / float(flux_cors_r[ind]) ** 2
+                ivar[ind, rec_z] = hdu['IVAR'].data[fib_id, rec_z] / float(flux_cors_z[ind]) ** 2
+                sky[ind, rec_z] = hdu['SKY'].data[fib_id, rec_z] * float(flux_cors_z[ind])
+                sky_ivar[ind, rec_z] = hdu['SKY_IVAR'].data[fib_id, rec_z] / float(flux_cors_z[ind]) ** 2
                 flux[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
                 sky[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
 
