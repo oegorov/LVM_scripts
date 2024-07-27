@@ -32,6 +32,7 @@ from astropy.coordinates import EarthLocation
 from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_pdf import PdfPages
 from lmfit.models import GaussianModel, ConstantModel
+from regions import Regions
 
 import warnings
 from astropy.utils.exceptions import AstropyWarning, AstropyUserWarning
@@ -239,8 +240,18 @@ def LVM_process(config_filename=None, output_dir=None):
     else:
         log.info("Skip imaging from a single RSS file")
 
+    # === Step 7 - Extract spectra in ds9 regions
+    if config['steps'].get('spectra_extraction'):
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
+        status = extract_spectra_ds9(config, w_dir=cur_wdir)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
 
-    # === Step 7 - create cubes in different lines
+
+    # === Step 8 - create cubes in different lines
     if config['steps'].get('create_cube'):
         cur_wdir = output_dir
         if cur_wdir is None:
@@ -2458,6 +2469,223 @@ def process_single_rss(config, output_dir=None):
         statuses.append(status_out)
     return np.all(statuses)
 
+
+def extract_spectra_ds9(config, w_dir=None):
+    """
+        Extract spectra in given ds9 regions
+        :param config: dictionary with configuration parameters
+        :param output_dir: path to output directory
+        :return:
+        """
+    if w_dir is None or not os.path.exists(w_dir):
+        log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
+        return False
+
+    statuses = []
+    if not config.get('extraction'):
+        log.error(f"Cannot proceed with the extraction step without corresponding control block in the config file.")
+        return False
+    suffix_out = config['extraction'].get('file_output_suffix')
+    if not suffix_out:
+        suffix_out = '_extracted.fits'
+
+    for cur_obj in config['object']:
+        status_out = True
+        log.info(f"Extracting spectra for {cur_obj.get('name')}.")
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        if not os.path.exists(cur_wdir):
+            log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
+            statuses.append(False)
+            continue
+        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+        if not os.path.isfile(f_tab_summary):
+            log.error(f"Table with the results of the RSS analysis doesn't exist. "
+                      f"Anylise_rss step must be run before the spectra extraction. "
+                      f"Can't proceed with object {cur_obj.get('name')}.")
+            statuses.append(False)
+            continue
+        f_ds9 = os.path.join(cur_wdir, f"{cur_obj.get('name')}{config['extraction'].get('file_ds9_suffix')}")
+        f_ds9_mask = os.path.join(cur_wdir, f"{cur_obj.get('name')}{config['extraction'].get('mask_ds9_suffix')}")
+        f_out = os.path.join(cur_wdir, f"{cur_obj.get('name')}{suffix_out}")
+        if not os.path.isfile(f_ds9):
+            log.error(f"ds9 file doesn't exist. "
+                      f"Create regions for the extraction first. "
+                      f"Can't proceed with object {cur_obj.get('name')}.")
+            statuses.append(False)
+            continue
+        if not os.path.isfile(f_ds9_mask):
+            reg_mask = None
+        else:
+            reg_mask = Regions.read(f_ds9_mask, format='ds9')
+            log.info(f"Region mask for {cur_obj.get('name')} is used")
+
+        table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
+                                  converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                              'fluxcorr_z': str, 'vhel_corr': str})
+
+        correct_vel_line = config['extraction'].get('correct_vel_line')
+        if not correct_vel_line:
+            correct_vel_line = None
+        else:
+            if correct_vel_line+'_vel' not in table_fluxes.colnames:
+                log.warning(f"Can't correct spectra for velocity because "
+                            f"the measurements in {correct_vel_line} are not found in RSS flux table")
+                correct_vel_line = None
+
+        ras = table_fluxes['fib_ra']
+        decs = table_fluxes['fib_dec']
+        radec = SkyCoord(ra=ras, dec=decs, unit=('degree', 'degree'))
+        dec_0 = np.min(decs) - 37. / 2 / 3600
+        dec_1 = np.max(decs) + 37. / 2 / 3600
+        ra_0 = np.max(ras) + 37. / 2 / 3600 / np.cos(dec_1 / 180 * np.pi)
+        ra_1 = np.min(ras) - 37. / 2 / 3600 / np.cos(dec_0 / 180 * np.pi)
+
+        ra_cen = (ra_0 + ra_1) / 2.
+        dec_cen = (dec_0 + dec_1) / 2.
+        nx = np.ceil((ra_0 - ra_1) * max(
+            [np.cos(dec_0 / 180. * np.pi), np.cos(dec_1 / 180. * np.pi)]) / 1 * 3600. / 2.).astype(
+            int) * 2 + 1
+        ny = np.ceil((dec_1 - dec_0) / 1 * 3600. / 2.).astype(int) * 2 + 1
+        ra_0 = np.round(ra_cen + (nx - 1) / 2 * 1 / 3600. / max(
+            [np.cos(dec_0 / 180. * np.pi), np.cos(dec_1 / 180. * np.pi)]), 6)
+        dec_0 = np.round(dec_cen - (ny - 1) / 2 * 1 / 3600., 6)
+        ra_cen = np.round(ra_cen, 6)
+        dec_cen = np.round(dec_cen, 6)
+        # Create a new WCS object.  The number of axes must be set
+        # from the start
+        wcs_ref = WCS(naxis=2)
+        wcs_ref.wcs.crpix = [(nx - 1) / 2 + 1, (ny - 1) / 2 + 1]
+        wcs_ref.wcs.cdelt = np.array([-np.round(1 / 3600., 6), np.round(1 / 3600., 6)])
+        wcs_ref.wcs.crval = [ra_cen, dec_cen]
+        wcs_ref.wcs.cunit = ['deg', 'deg']
+        wcs_ref.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        regions = Regions.read(f_ds9, format='ds9')
+        hdu_out = fits.HDUList([fits.PrimaryHDU()])
+
+        fig = plt.figure(figsize=(20,20))
+        gs = GridSpec(len(regions), 1, fig, 0.1, 0.1, 0.99, 0.99, 0.1, 0.15)
+        for cur_reg_id, cur_reg in enumerate(regions):
+            cur_reg_name = cur_reg.meta['text']
+            in_reg = cur_reg.contains(radec, wcs_ref)
+            if reg_mask is not None:
+                for cur_mask in reg_mask:
+                    in_reg = in_reg & (~cur_mask.contains(radec, wcs_ref))
+            in_reg = np.flatnonzero(in_reg)
+            if len(in_reg) == 0:
+                log.warning(f"No fibers within region {cur_reg_name}")
+                continue
+
+            if correct_vel_line is not None:
+                med_vel = np.nanmedian(table_fluxes[in_reg][f'{correct_vel_line}_vel'])
+                print(med_vel, np.nanstd(table_fluxes[in_reg][f'{correct_vel_line}_vel']-med_vel))
+                params = zip(table_fluxes[in_reg]['sourceid'], table_fluxes[in_reg]['fluxcorr_b'],
+                             table_fluxes[in_reg]['fluxcorr_r'], table_fluxes[in_reg]['fluxcorr_z'],
+                             table_fluxes[in_reg]['vhel_corr'], table_fluxes[in_reg][f'{correct_vel_line}_vel']-med_vel,
+                             [cur_obj.get('velocity')] * len(in_reg),
+                             [config['imaging'].get('include_sky')] * len(in_reg),
+                             [config['imaging'].get('partial_sky')] * len(in_reg),
+                             [cur_wdir] * len(in_reg)
+                             )
+            else:
+                params = zip(table_fluxes[in_reg]['sourceid'], table_fluxes[in_reg]['fluxcorr_b'],
+                             table_fluxes[in_reg]['fluxcorr_r'], table_fluxes[in_reg]['fluxcorr_z'],
+                             table_fluxes[in_reg]['vhel_corr'],[0]*len(in_reg), [cur_obj.get('velocity')]*len(in_reg),
+                             [config['imaging'].get('include_sky')]*len(in_reg), [config['imaging'].get('partial_sky')]*len(in_reg),
+                             [cur_wdir]*len(in_reg))
+
+            nprocs = np.min([np.max([config.get('nprocs'), 1]), len(in_reg)])
+            with mp.Pool(processes=nprocs) as pool:
+                res = list(tqdm(pool.imap(extract_spectrum_for_cur_fiber, params),
+                        ascii=True, desc=f"Extract spectra from fibers in {cur_reg_name} region",
+                        total=len(in_reg)))
+
+                pool.close()
+                pool.join()
+                gc.collect()
+            res = np.array(res)
+
+            flux = np.atleast_2d(np.nanmean(res[:,0,:], axis=0)/np.pi/(fiber_d**2/4))
+            error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 1, :]**2, axis=0))/np.pi/(fiber_d**2/4))
+            sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0)/np.pi/(fiber_d**2/4))
+            sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0))/np.pi/(fiber_d**2/4))
+            cur_hdu = fits.ImageHDU(data = np.vstack([flux,error,sky,sky_error], dtype=np.float32), name=cur_reg_name)
+            cur_hdu.header['CRVAL1'] = res[0,4,0]
+            cur_hdu.header['CRPIX1'] = 1
+            cur_hdu.header['CDELT1'] = res[0,4,1]-res[0,4,0]
+            cur_hdu.header['CTYPE1'] = 'WAV-AWAV'
+            hdu_out.append(cur_hdu)
+
+            ax = fig.add_subplot(gs[cur_reg_id])
+            ax.plot(res[0, 4, :], flux[0,:])
+            ax.set_title(cur_reg_name)
+            ax.set_xlabel(r"Wavelength, $\AA$")
+            ax.set_ylabel(r"Intensity, erg/s/cm^2/arcsec^2/A")
+
+        hdu_out.writeto(f_out, overwrite=True)
+        fig.savefig(f_out.replace(".fits", '.pdf'), dpi=300, bbox_inches='tight')
+        statuses.append(True)
+
+    return np.all(statuses)
+
+
+def extract_spectrum_for_cur_fiber(params):
+
+    (source_ids, flux_cors_b, flux_cors_r, flux_cors_z, vhel_corrs, corr_vel_line,
+     velocity, include_sky, partial_sky, path_to_fits) = params
+    source_ids = source_ids.split(', ')
+    flux_cors_b = flux_cors_b.split(', ')
+    flux_cors_r = flux_cors_r.split(', ')
+    flux_cors_z = flux_cors_z.split(', ')
+    vhel_corrs = vhel_corrs.split(', ')
+    wl_grid = None
+    for ind, source_id in enumerate(source_ids):
+        pointing, expnum, fib_id = source_id.split('_')
+        expnum = int(expnum)
+        fib_id = int(fib_id) - 1
+        if include_sky:
+            rssfile = os.path.join(path_to_fits, pointing, f'lvmCFrame-{expnum:0>8}.fits')
+        else:
+            rssfile = os.path.join(path_to_fits, pointing, f'lvmSFrame-{expnum:0>8}.fits')
+
+        with fits.open(rssfile) as hdu:
+            if wl_grid is None:
+                wl_grid = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
+                            hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] +
+                           hdu['FLUX'].header['CRVAL1'])
+
+                flux = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
+                ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
+                sky = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
+                sky_ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
+            if partial_sky:
+                flux[ind, :] = ((hdu['FLUX'].data[fib_id, :] + hdu['SKY'].data[fib_id, :]) -
+                                mask_sky_at_bright_lines(hdu['SKY'].data[fib_id, :], wave=wl_grid,
+                                                         vel=velocity, mask=hdu['MASK'].data[fib_id, :]))
+            else:
+                flux_corr = float(np.nanmean([float(flux_cors_b[ind]), float(flux_cors_r[ind]),float(flux_cors_z[ind])]) )
+                flux[ind, :] = hdu['FLUX'].data[fib_id, :] * flux_corr
+
+            ivar[ind, :] = hdu['IVAR'].data[fib_id, :] / flux_corr ** 2
+            sky[ind, :] = hdu['SKY'].data[fib_id, :] * flux_corr
+            sky_ivar[ind, :] = hdu['SKY_IVAR'].data[fib_id, :] / flux_corr ** 2
+            flux[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
+            sky[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
+
+        delta_v = float(float(vhel_corrs[ind]) - corr_vel_line)
+        if delta_v > 2.:
+            flux[ind, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 3e5), flux[ind, :])
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+        )
+        flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
+        ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0) ** 2)
+        sky = np.nansum(sky, axis=0) / np.sum(np.isfinite(sky), axis=0)
+        sky_ivar = 1 / (np.nansum(1 / sky_ivar, axis=0) / np.sum(np.isfinite(sky_ivar), axis=0) ** 2)
+        error = 1/np.sqrt(ivar)
+        sky_error = 1 / np.sqrt(sky_ivar)
+
+    return flux, error, sky, sky_error, wl_grid
 
 def reconstruct_cube(config, w_dir=None):
     statuses = []
