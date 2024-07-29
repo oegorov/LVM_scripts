@@ -1453,7 +1453,7 @@ def process_all_rss(config, w_dir=None):
                             else:
                                 log.warning(f"Found in files fownloaded from SAS. Copying...")
                                 shutil.copy(cur_fname_source, cur_fname)
-                        with fits.open(cur_fname) as rss:
+                        with (fits.open(cur_fname) as rss):
                             cur_table_fibers = Table(rss['SLITMAP'].data)
                             cur_obstime = Time(rss[0].header['OBSTIME'])
                             sci = cur_table_fibers['targettype'] == 'science'
@@ -1461,7 +1461,9 @@ def process_all_rss(config, w_dir=None):
                                 sci = sci & (cur_table_fibers['fibstatus'] == 0)
                             sci = np.flatnonzero(sci)
                             if rss[0].header.get('STDSENMR') and rss[0].header.get('SCISENMR'):
-                                if (rss[0].header['STDSENRR']/rss[0].header['STDSENMR'] > 0.2) or abs(np.log10(float(rss[0].header['SCISENMR'])/float(rss[0].header['STDSENMR'])))>0.1:
+                                if ((rss[0].header['STDSENMR'] < 0) or (rss[0].header['STDSENMR'] < 0) or
+                                    (rss[0].header['STDSENMR'] < 0) or (rss[0].header['STDSENRR']/rss[0].header['STDSENMR'] > 0.2) or
+                                    abs(np.log10(float(rss[0].header['SCISENMR'])/float(rss[0].header['STDSENMR'])))>0.1):
                                     log.warning(f"{exp} has potential problems with flux calib: "
                                                 f"stderr/med={np.round(rss[0].header['STDSENRB']/rss[0].header['STDSENMB'],2)}, "
                                                 f"{np.round(rss[0].header['STDSENRR']/rss[0].header['STDSENMR'],2)}, "
