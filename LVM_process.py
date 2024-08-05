@@ -217,14 +217,18 @@ def LVM_process(config_filename=None, output_dir=None):
                 file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.txt")
                 cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS')
                 line_list = config['imaging'].get('lines')
+                filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
+
             elif config['imaging'].get('use_dap'):
                 file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
                 cur_wdir = os.path.join(cur_wdir, 'maps_dap')
                 line_list = dap_results_correspondence.keys()
+                filter_sn = None
             else:
                 file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
                 cur_wdir = os.path.join(cur_wdir, 'maps')
                 line_list = config['imaging'].get('lines')
+                filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
 
             cur_status = create_line_image_from_table(file_fluxes=file_fluxes, lines=line_list,
                                                       pxscale_out=config['imaging'].get('pxscale'),
@@ -232,7 +236,8 @@ def LVM_process(config_filename=None, output_dir=None):
                                                       sigma=config['imaging'].get('sigma'),
                                                       output_dir=cur_wdir, ra_lims=config['imaging'].get('ra_limits'),
                                                       dec_lims=config['imaging'].get('dec_limits'),
-                                                      outfile_prefix=f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec")
+                                                      outfile_prefix=f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec",
+                                                      filter_sn=filter_sn)
             status = status & cur_status
         if not status:
             log.error("Critical errors occurred. Exit.")
@@ -1906,7 +1911,7 @@ def derive_radec_ifu(mjd, expnum, first_exp=None, objname=None, pointing_name=No
 
 
 def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r_lim=50, sigma=2.,
-                                output_dir=None, do_median_masking=False,
+                                output_dir=None, do_median_masking=False, filter_sn=None,
                                 outfile_prefix=None, ra_lims=None, dec_lims=None):
     lvm_fiber_diameter = 35.3
     if not os.path.isfile(file_fluxes):
@@ -1976,9 +1981,13 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
     # img_arr = np.zeros((ny, nx), dtype=float)
     # img_arr[:, :] = np.nan
     values = None
+    values_errs = None
+    masks = None
+    masks_errs = None
     names_out = []
+    names_out_errs = []
 
-    for cur_line in lines:
+    for cl_id, cur_line in enumerate(lines):
         if isinstance(cur_line, str):  # this is valid in case of DAP
             lns = [cur_line]
         else:
@@ -1989,32 +1998,50 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
             lns.extend([l+'_c2' for l in lns_orig])
             lns.extend([l + '_c3' for l in lns_orig])
         for ln in lns:
+            if f'{ln}_flux' in table_fluxes.colnames:
+                cur_masks = np.isfinite(table_fluxes[f'{ln}_flux']) & (table_fluxes[f'{ln}_flux'] != 0)
+                if filter_sn is not None and filter_sn[cl_id] is not None and np.isfinite(filter_sn[cl_id]) and f'{ln}_fluxerr' in table_fluxes.colnames:
+                    cur_masks = cur_masks & (table_fluxes[f'{ln}_flux'] / table_fluxes[f'{ln}_fluxerr'] >= filter_sn[cl_id])
             if values is None:
                 if f'{ln}_flux' in table_fluxes.colnames:
                     values = table_fluxes[f'{ln}_flux'] #/ (np.pi * lvm_fiber_diameter ** 2 / 4)
+                    masks = np.copy(cur_masks)
+                    if f'{ln}_fluxerr' in table_fluxes.colnames:
+                        values_errs =table_fluxes[f'{ln}_fluxerr']
+                        masks_errs = np.copy(cur_masks)
                 else:
                     continue
             else:
                 if f'{ln}_flux' in table_fluxes.colnames:
                     values = np.vstack([values.T, table_fluxes[f'{ln}_flux'].T]).T #/ (np.pi * lvm_fiber_diameter ** 2 / 4)
+                    masks = np.vstack([masks.T, cur_masks.T]).T
+                    if f'{ln}_fluxerr' in table_fluxes.colnames:
+                        values_errs = np.vstack([values_errs.T, table_fluxes[f'{ln}_fluxerr'].T]).T
+                        masks_errs = np.vstack([masks_errs.T, cur_masks.T]).T
                 else:
                     continue
             names_out.append(f'{ln}_flux')
+            if f'{ln}_fluxerr' in table_fluxes.colnames:
+                names_out_errs.append(f'{ln}_fluxerr')
             for suff in ['vel', 'disp', 'cont']:
-                if suff == 'cont':
-                    fluxcorr = 1#(np.pi * lvm_fiber_diameter ** 2 / 4)
-                else:
-                    fluxcorr = 1
                 if f'{ln}_{suff}' in table_fluxes.colnames:
-                    values = np.vstack([values.T, table_fluxes[f'{ln}_{suff}'].T/fluxcorr]).T
+                    values = np.vstack([values.T, table_fluxes[f'{ln}_{suff}'].T]).T
+                    masks = np.vstack([masks.T, cur_masks.T]).T
+                    values_errs = np.vstack([values_errs.T, table_fluxes[f'{ln}_{suff}err'].T]).T
+                    masks_errs = np.vstack([masks_errs.T, cur_masks.T]).T
                     names_out.append(f'{ln}_{suff}')
+                    names_out_errs.append(f'{ln}_{suff}err')
+
     if values is None:
         log.error('Nothing to show.')
         return False
     if len(values.shape) == 1:
         values = values.reshape((-1, 1))
     img_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values,
-                               r_lim=r_lim, sigma=sigma)
+                               r_lim=r_lim, sigma=sigma, masks=masks)
+    if values_errs is not None:
+        err_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values_errs,
+                                   r_lim=r_lim, sigma=sigma, masks=masks_errs, is_error=True)
     header = wcs_out.to_header()
     for ind in range(img_arr.shape[2]):
         outfile_suffix = names_out[ind]
@@ -2022,6 +2049,11 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
             img_arr[:, :, ind] = median_filter(img_arr[:, :, ind], (11, 11))
         fits.writeto(os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits"),
                      data=img_arr[:, :, ind], header=header, overwrite=True)
+    if values_errs is not None:
+        for ind in range(err_arr.shape[2]):
+            outfile_suffix = names_out_errs[ind]
+            fits.writeto(os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits"),
+                         data=err_arr[:, :, ind], header=header, overwrite=True)
     return True
 
 
@@ -2866,14 +2898,22 @@ def make_radec(xx0,yy0,ra,dec,pa):
     return ra_fib, dec_fib
 
 def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_values=None, r_lim=50., sigma=2.,
-                     cube=False, header=None, outfile=None, do_median_masking=False):
+                     cube=False, header=None, outfile=None, do_median_masking=False, masks=None, remove_empty=False,
+                     is_error=False):
+    if is_error:
+        show_values = show_values ** 2
     if not cube:
         if len(show_values.shape) ==1:
             show_values = show_values.reshape((-1, 1))
-        if show_values.shape[1] > 7:
-            rec_fibers = np.isfinite(show_values[:,0]) & (show_values[:,0] != 0) #& np.isfinite(show_values[:,-4]) & (show_values[:,-4] < 35) & (show_values[:,-4] > 18)
-        else:
-            rec_fibers = np.isfinite(show_values[:, 0]) & (show_values[:, 0] != 0)
+            masks = masks.reshape((-1,1))
+        # if show_values.shape[1] > 7:
+        #     rec_fibers = np.isfinite(show_values[:,0]) & (show_values[:,0] != 0) #& np.isfinite(show_values[:,-4]) & (show_values[:,-4] < 35) & (show_values[:,-4] > 18)
+        # else:
+        if masks is None:
+            masks = np.tile(np.isfinite(show_values[:, 0]) & (show_values[:, 0] != 0), show_values.shape) # or tile??
+        # rec_fibers = np.isfinite(show_values[:, 0]) & (show_values[:, 0] != 0)
+        rec_fibers = np.any(masks, axis=1)
+        masks = masks[rec_fibers]
         show_values = show_values[rec_fibers,:]
     else:
         rec_fibers = np.isfinite(np.nansum(show_values.T, axis=0)) & (np.nansum(show_values.T, axis=0) != 0)
@@ -2883,7 +2923,7 @@ def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_v
     x_fibers, y_fibers = wcs_out.world_to_pixel(radec)
     # x_fibers = np.round(x_fibers).astype(int)
     # y_fibers = np.round(y_fibers).astype(int)
-    chunk_size = min([int(r_lim * 10 / pxsize), 100])
+    chunk_size = min([int(r_lim * 5 / pxsize), 50])
     khalfsize = int(np.ceil(r_lim / pxsize))
     kernel_size = khalfsize * 2 + 1
 
@@ -2931,7 +2971,10 @@ def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_v
                 last_y = -1
             continue
 
-        weights = np.zeros(shape=(len(rec_fibers), ny, nx), dtype=float)
+        if not cube:
+            weights = np.zeros(shape=(len(rec_fibers), ny, nx, show_values.shape[-1]), dtype=float)
+        else:
+            weights = np.zeros(shape=(len(rec_fibers), ny, nx), dtype=float)
 
         for ind, xy in enumerate(zip(x_fibers[rec_fibers], y_fibers[rec_fibers])):
             frac_x = xy[0] - np.floor(xy[0])
@@ -2948,17 +2991,36 @@ def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_v
             kernel[dist_2 > (r_lim ** 2)] = 0
             # if ~np.isfinite(show_values[rec_fibers][ind, 0]) or show_values[rec_fibers][ind, 0] == 0:
             #     kernel = kernel * 0
-            weights[ind, cur_y0:cur_y1+1, cur_x0: cur_x1+1] = kernel[khalfsize - (cur_center_y-cur_y0): khalfsize - (cur_center_y-cur_y0)+ cur_y1 - cur_y0+1,
-                                                                     khalfsize - (cur_center_x-cur_x0): khalfsize - (cur_center_x-cur_x0)+cur_x1 - cur_x0+1]
+            if not cube:
+                weights[ind, cur_y0:cur_y1+1, cur_x0: cur_x1+1, :] = (
+                                                                         kernel)[khalfsize - (cur_center_y-cur_y0):
+                                                                                 khalfsize - (cur_center_y-cur_y0)+ cur_y1 - cur_y0+1,
+                                                                     khalfsize - (cur_center_x-cur_x0):
+                                                                     khalfsize - (cur_center_x-cur_x0)+cur_x1 - cur_x0+1,
+                                                                     None] * (masks[rec_fibers[ind],None,None,:]).astype(float)
+            else:
+                weights[ind, cur_y0:cur_y1 + 1, cur_x0: cur_x1 + 1] = kernel[
+                                                                      khalfsize - (cur_center_y - cur_y0): khalfsize - (
+                                                                                  cur_center_y - cur_y0) + cur_y1 - cur_y0 + 1,
+                                                                      khalfsize - (cur_center_x - cur_x0): khalfsize - (
+                                                                                  cur_center_x - cur_x0) + cur_x1 - cur_x0 + 1]
 
         weights_norm = np.sum(weights, axis=0)
         weights_norm[weights_norm == 0] = 1
-        weights = weights / weights_norm[None, :, :]
+        if is_error:
+            weights = weights ** 2
+            weights_norm = weights_norm**2
+        if not cube:
+            weights = weights / weights_norm[None, :, :, :]
+        else:
+            weights = weights / weights_norm[None, :, :]
         n_used_fib = np.sum(weights > 0, axis=0)
         n_used_fib = np.broadcast_to(n_used_fib, weights.shape)
-        weights[n_used_fib < 3] = 0
+        weights[n_used_fib < 2] = 0
+        if remove_empty:
+            weights[weights == 0] = np.nan
         if not cube:
-            img_chunk = np.nansum(weights[:, :, :, None] * show_values[rec_fibers, None, None, :], axis=0)
+            img_chunk = np.nansum(weights[:, :, :, :] * show_values[rec_fibers, None, None, :], axis=0)
 
             img_out[last_y + 1: last_y + 1 + ny - dy0 - dy1,
                     last_x + 1: last_x + 1 + nx - dx0 - dx1, :] = img_chunk[dy0: ny - dy1, dx0: nx - dx1, :]
@@ -2977,8 +3039,12 @@ def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_v
             last_y = -1
     # img_out = median_filter(img_out, (20,20))#median_filter(img_out, (25, 25))
     if cube:
+        if is_error:
+            hdu_out[0].data = np.sqrt(hdu_out[0].data)
         hdu_out.writeto(outfile, overwrite=True, output_verify='silentfix')
     else:
+        if is_error:
+            img_out = np.sqrt(img_out)
         return img_out
 
 
