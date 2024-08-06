@@ -245,7 +245,17 @@ def LVM_process(config_filename=None, output_dir=None):
     else:
         log.info("Skip imaging from a single RSS file")
 
-    # === Step 7 - Extract spectra in ds9 regions
+    # === Step 7 - Voronoi binning of the RSS based on the image in a single line
+    if config['steps'].get('binning'):
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
+        status = vorbin_rss(config, w_dir=cur_wdir)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+
+    # === Step 8 - Extract spectra in ds9 regions
     if config['steps'].get('spectra_extraction'):
         cur_wdir = output_dir
         if cur_wdir is None:
@@ -2504,6 +2514,188 @@ def process_single_rss(config, output_dir=None):
     return np.all(statuses)
 
 
+def sn_func(index, signal=None, noise=None):
+    sn = np.nansum(signal[index])/np.sqrt(np.nansum(noise[index]**2))
+
+    # The following commented line illustrates, as an example, how one
+    # would include the effect of spatial covariance using the empirical
+    # Eq.(1) from http://adsabs.harvard.edu/abs/2015A%26A...576A.135G
+    # Note however that the formula is not accurate for large bins.
+    #
+    # sn /= 1 + 1.07*np.log10(index.size)
+    return sn
+
+
+def vorbin_rss(config, w_dir=None):
+    from voronoi_2d_binning import voronoi_2d_binning
+
+    if w_dir is None or not os.path.exists(w_dir):
+        log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
+        return False
+    statuses = []
+    if not config.get('binning'):
+        log.error(f"Cannot proceed with the binning step without corresponding control block in the config file.")
+        return False
+    suffix_out = config['binning'].get('rss_output_suffix')
+    if not suffix_out:
+        suffix_out = '_vorbin_rss.fits'
+    suffix_binmap = config['binning'].get('binmap_suffix')
+    if not suffix_binmap:
+        suffix_binmap = '_binmap.fits'
+    bin_line = config['binning'].get('line')
+    if not bin_line:
+        bin_line = 'Ha'
+    target_sn = config['binning'].get('target_sn')
+    if not target_sn:
+        target_sn = 30.
+    else:
+        target_sn = float(target_sn)
+    for cur_obj in config['object']:
+        log.info(f"Binning data for {cur_obj.get('name')}.")
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        if not os.path.exists(cur_wdir):
+            log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
+            statuses.append(False)
+            continue
+        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+        if not os.path.isfile(f_tab_summary):
+            log.error(f"Table with the results of the RSS analysis doesn't exist. "
+                      f"Anylise_rss step must be run before the binning spectra. "
+                      f"Can't proceed with object {cur_obj.get('name')}.")
+            statuses.append(False)
+            continue
+        log.info(f"Performing voronoi binning for object {cur_obj.get('name')}. "
+                 f"Target SN={target_sn} in {bin_line} line.")
+        f_binmap = os.path.join(cur_wdir, 'maps',
+                                f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
+        f_image = os.path.join(cur_wdir, 'maps',
+                               f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_flux.fits")
+        f_err = os.path.join(cur_wdir, 'maps',
+                             f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_fluxerr.fits")
+        if not os.path.isfile(f_image) or not os.path.isfile(f_err):
+            log.error(
+                f"Maps of flux and errors in {bin_line} must be created in 'maps' folder for {cur_obj.get('name')}"
+                f" before the binning. If they are there already, check that pixscale is consistent "
+                f"with what is indicated in 'imaging' block")
+            statuses.append(False)
+            continue
+        header = fits.getheader(f_image)
+        if not config['binning'].get('use_binmap'):
+            signal = fits.getdata(f_image)
+            noise = fits.getdata(f_err)
+            x, y = np.meshgrid(np.arange(signal.shape[1]), np.arange(signal.shape[0]))
+            rec = (np.isfinite(noise) & (noise > 0) & (signal/noise >= 1)).ravel()
+            # noise[rec] = abs(np.nanmedian(signal)+np.nanstd(signal))
+
+            binnum, _, _, x_bar, y_bar, sn, nPixels, _ = voronoi_2d_binning(x.ravel()[rec], y.ravel()[rec],
+                                                                                        signal.ravel()[rec], noise.ravel()[rec],
+                                                                                        target_sn, plot=0, quiet=1,
+                                                                            pixelsize=1, sn_func=sn_func, cvt=False)
+            bin_image = np.zeros_like(signal, dtype=int) - 1
+            bin_image.ravel()[rec] = binnum
+            # bin_image = binnum.reshape(signal.shape)
+            fits.writeto(f_binmap, data=bin_image, header=header, overwrite=True)
+        else:
+            if not os.path.isfile(f_binmap):
+                log.error(f"Binmap in {bin_line} is not found be created in 'maps' folder for {cur_obj.get('name')}."
+                          f" If they are there already, check that pixscale is consistent "
+                          f"with what is indicated in 'imaging' block. Otherwise, set 'use_binmap' to false")
+                statuses.append(False)
+                continue
+            bin_image = fits.getdata(f_binmap)
+
+
+        tab = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
+                         converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                     'fluxcorr_z': str, 'vhel_corr': str})
+        wcs = WCS(header)
+        tab_x, tab_y = wcs.world_to_pixel(SkyCoord(ra=tab['fib_ra'], dec=tab['fib_dec'], unit=('degree','degree')))
+        binnum_fibers = np.zeros(shape=len(tab), dtype=int)-1
+        rec = np.flatnonzero((tab_x >= 0) & (tab_y >= 0) & (tab_x <= (bin_image.shape[1]-1)) & (tab_y <= (bin_image.shape[0]-1)))
+        for r in rec:
+            binnum_fibers[r] = bin_image[int(np.round(tab_y[r])), int(np.round(tab_x[r]))]
+        if 'binnum' not in tab.colnames:
+            tab.add_column(binnum_fibers, name='binnum')
+        else:
+            tab['binnum'] = binnum_fibers
+        tab.write(f_tab_summary, format='ascii.fixed_width_two_line', overwrite=True)
+
+        #==== Extraction of the spectrum (modified from extract_spectra_ds9)
+        hdu_out = fits.HDUList([fits.PrimaryHDU()])
+        uniq_bins = np.unique(tab['binnum'][tab['binnum']>=0])
+        if config['binning'].get('correct_vel_line'):
+            if config['binning'].get('correct_vel_line')+'_vel' in tab.colnames:
+                correct_vel_line = config['binning'].get('correct_vel_line')+'_vel'
+            else:
+                correct_vel_line = None
+        else:
+            correct_vel_line = None
+        for cur_bin_id, cur_bin in enumerate(uniq_bins):
+            in_reg = np.flatnonzero(tab['binnum'] == cur_bin)
+            if correct_vel_line is not None:
+                med_vel = np.nanmedian(tab[in_reg][correct_vel_line])
+                params = zip(tab[in_reg]['sourceid'], tab[in_reg]['fluxcorr_b'],
+                             tab[in_reg]['fluxcorr_r'], tab[in_reg]['fluxcorr_z'],
+                             tab[in_reg]['vhel_corr'],
+                             tab[in_reg][correct_vel_line] - med_vel,
+                             [cur_obj.get('velocity')] * len(in_reg),
+                             [config['imaging'].get('include_sky')] * len(in_reg),
+                             [config['imaging'].get('partial_sky')] * len(in_reg),
+                             [cur_wdir] * len(in_reg)
+                             )
+            else:
+                params = zip(tab[in_reg]['sourceid'], tab[in_reg]['fluxcorr_b'],
+                             tab[in_reg]['fluxcorr_r'], tab[in_reg]['fluxcorr_z'],
+                             tab[in_reg]['vhel_corr'], [0] * len(in_reg),
+                             [cur_obj.get('velocity')] * len(in_reg),
+                             [config['imaging'].get('include_sky')] * len(in_reg),
+                             [config['imaging'].get('partial_sky')] * len(in_reg),
+                             [cur_wdir] * len(in_reg))
+
+            nprocs = np.min([np.max([config.get('nprocs'), 1]), len(in_reg)])
+            with mp.Pool(processes=nprocs) as pool:
+                res = list(tqdm(pool.imap(extract_spectrum_for_cur_fiber, params),
+                                ascii=True, desc=f"Extract spectra from fibers in {cur_bin_id+1}/{len(uniq_bins)} bins",
+                                total=len(in_reg)))
+
+                pool.close()
+                pool.join()
+                gc.collect()
+            res = np.array(res)
+
+            cur_flux = np.atleast_2d(np.nanmean(res[:, 0, :], axis=0) / np.pi / (fiber_d ** 2 / 4))
+            cur_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 1, :] ** 2, axis=0)) / np.pi / (fiber_d ** 2 / 4))
+            cur_sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0) / np.pi / (fiber_d ** 2 / 4))
+            cur_sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0)) / np.pi / (fiber_d ** 2 / 4))
+
+            if cur_bin_id == 0:
+                flux = np.empty(shape=(max(tab['binnum'])+1, cur_flux.shape[1]), dtype=float)
+                error = np.empty(shape=(max(tab['binnum'])+1, cur_flux.shape[1]), dtype=float)
+                sky = np.empty(shape=(max(tab['binnum'])+1, cur_flux.shape[1]), dtype=float)
+                sky_error = np.empty(shape=(max(tab['binnum'])+1, cur_flux.shape[1]), dtype=float)
+
+            flux[cur_bin] = cur_flux[0,:]
+            error[cur_bin] = cur_error[0, :]
+            sky[cur_bin] = cur_sky[0, :]
+            sky_error[cur_bin] = cur_sky_error[0, :]
+
+        hdu_flux = fits.ImageHDU(data=np.array(flux, dtype=np.float32), name='FLUX')
+        hdu_ivar = fits.ImageHDU(data=np.array(1/error**2, dtype=np.float32), name='IVAR')
+        hdu_sky = fits.ImageHDU(data=np.array(sky, dtype=np.float32), name='SKY')
+        hdu_sky_ivar = fits.ImageHDU(data=np.array(1 / sky_error ** 2, dtype=np.float32), name='SKY_IVAR')
+        for hdu in [hdu_flux, hdu_ivar, hdu_sky, hdu_sky_ivar]:
+            hdu.header['CRVAL1'] = res[0, 4, 0]
+            hdu.header['CRPIX1'] = 1
+            hdu.header['CDELT1'] = res[0, 4, 1] - res[0, 4, 0]
+            hdu.header['CTYPE1'] = 'WAV-AWAV'
+            hdu_out.append(hdu)
+        f_out = os.path.join(cur_wdir, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
+        hdu_out.writeto(f_out, overwrite=True)
+
+
+    return np.all(statuses)
+
+
 def extract_spectra_ds9(config, w_dir=None):
     """
         Extract spectra in given ds9 regions
@@ -2524,7 +2716,6 @@ def extract_spectra_ds9(config, w_dir=None):
         suffix_out = '_extracted.fits'
 
     for cur_obj in config['object']:
-        status_out = True
         log.info(f"Extracting spectra for {cur_obj.get('name')}.")
         cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
         if not os.path.exists(cur_wdir):
