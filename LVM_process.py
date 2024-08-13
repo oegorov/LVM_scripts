@@ -184,6 +184,13 @@ def LVM_process(config_filename=None, output_dir=None):
         if config['imaging'].get('use_single_rss_file'):
             log.info("Analysing a single RSS file and measuring emission lines")
             status = process_single_rss(config, output_dir=cur_wdir)
+        elif config['imaging'].get('use_binned_rss_file') and 'binning' in config:
+            log.info(f"Analysing binned RSS file ({config['binning'].get('target_sn')} "
+                     f"in {config['binning'].get('bin_line')} line) and measuring emission lines")
+            status = process_single_rss(config, output_dir=cur_wdir, binned=True)
+        elif config['imaging'].get('use_binned_rss_file'):
+            log.error("'binning' block is not present. Exit.")
+            return
         elif config['imaging'].get('use_dap'):
             log.info("Processing DAP results")
             status = parse_dap_results(config, w_dir=cur_wdir)
@@ -218,7 +225,30 @@ def LVM_process(config_filename=None, output_dir=None):
                 cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS')
                 line_list = config['imaging'].get('lines')
                 filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
-
+            elif config['imaging'].get('use_binned_rss_file') and 'binning' in config:
+                bin_line = config['binning'].get('line')
+                if not bin_line:
+                    bin_line = 'Ha'
+                target_sn = config['binning'].get('target_sn')
+                if not target_sn:
+                    target_sn = 30.
+                else:
+                    target_sn = float(target_sn)
+                suffix_binmap = config['binning'].get('binmap_suffix')
+                if not suffix_binmap:
+                    suffix_binmap = '_binmap.fits'
+                file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
+                f_binmap = os.path.join(cur_wdir, 'maps',
+                                        f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
+                line_list = config['imaging'].get('lines')
+                if (not os.path.isfile(file_fluxes)) or (not os.path.isfile(f_binmap)):
+                    log.error("Either table with fluxes (from binned RSS) or binmap do not exist. Exit.")
+                    return
+                cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS')
+                filter_sn = None
+            elif config['imaging'].get('use_binned_rss_file'):
+                log.error("'binning' block is not present. Exit.")
+                return
             elif config['imaging'].get('use_dap'):
                 file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
                 cur_wdir = os.path.join(cur_wdir, 'maps_dap')
@@ -237,7 +267,7 @@ def LVM_process(config_filename=None, output_dir=None):
                                                       output_dir=cur_wdir, ra_lims=config['imaging'].get('ra_limits'),
                                                       dec_lims=config['imaging'].get('dec_limits'),
                                                       outfile_prefix=f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec",
-                                                      filter_sn=filter_sn)
+                                                      filter_sn=filter_sn, binmap=f_binmap)
             status = status & cur_status
         if not status:
             log.error("Critical errors occurred. Exit.")
@@ -1922,7 +1952,7 @@ def derive_radec_ifu(mjd, expnum, first_exp=None, objname=None, pointing_name=No
 
 def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r_lim=50, sigma=2.,
                                 output_dir=None, do_median_masking=False, filter_sn=None,
-                                outfile_prefix=None, ra_lims=None, dec_lims=None):
+                                outfile_prefix=None, ra_lims=None, dec_lims=None, binmap=None):
     lvm_fiber_diameter = 35.3
     if not os.path.isfile(file_fluxes):
         log.error(f"File {file_fluxes} not found")
@@ -1936,57 +1966,66 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         os.chmod(output_dir, 0o775)
 
     table_fluxes = Table.read(file_fluxes, format='ascii.fixed_width_two_line')
-    ras = table_fluxes['fib_ra']
-    decs = table_fluxes['fib_dec']
 
-    rec_tiles = np.ones_like(ras, dtype=bool)
-    if ra_lims is not None and type(ra_lims) in [list, tuple]:
-        if ra_lims[0] is not None and np.isfinite(ra_lims[0]):
-            rec_tiles = rec_tiles & (ras >= ra_lims[0])
-        if ra_lims[1] is not None and np.isfinite(ra_lims[1]):
-            rec_tiles = rec_tiles & (ras <= ra_lims[1])
-    if dec_lims is not None and type(dec_lims) in [list, tuple]:
-        if dec_lims[0] is not None and np.isfinite(dec_lims[0]):
-            rec_tiles = rec_tiles & (decs >= dec_lims[0])
-        if dec_lims[1] is not None and np.isfinite(dec_lims[1]):
-            rec_tiles = rec_tiles & (decs <= dec_lims[1])
-    rec_tiles = np.flatnonzero(rec_tiles)
-    if len(rec_tiles) == 0:
-        log.warning("Nothing to show")
-        return False
-    if len(rec_tiles) < len(table_fluxes):
-        ras = ras[rec_tiles]
-        decs = decs[rec_tiles]
-        table_fluxes = table_fluxes[rec_tiles]
+    if binmap is not None:
+        binmap_head = fits.getheader(binmap)
+        binmap = fits.getdata(binmap)
+        shape_out = binmap.shape
+        wcs_out = WCS(binmap_head)
+        grid_scl = wcs_out.proj_plane_pixel_scales()[0].value * 3600.
+    else:
+        ras = table_fluxes['fib_ra']
+        decs = table_fluxes['fib_dec']
 
-    dec_0 = np.min(decs)-37./2/3600
-    dec_1 = np.max(decs) + 37. / 2 / 3600
-    ra_0 = np.max(ras)+37./2/3600/np.cos(dec_1/180*np.pi)
-    ra_1 = np.min(ras) - 37. / 2 / 3600 / np.cos(dec_0 / 180 * np.pi)
+        rec_tiles = np.ones_like(ras, dtype=bool)
+        if ra_lims is not None and type(ra_lims) in [list, tuple]:
+            if ra_lims[0] is not None and np.isfinite(ra_lims[0]):
+                rec_tiles = rec_tiles & (ras >= ra_lims[0])
+            if ra_lims[1] is not None and np.isfinite(ra_lims[1]):
+                rec_tiles = rec_tiles & (ras <= ra_lims[1])
+        if dec_lims is not None and type(dec_lims) in [list, tuple]:
+            if dec_lims[0] is not None and np.isfinite(dec_lims[0]):
+                rec_tiles = rec_tiles & (decs >= dec_lims[0])
+            if dec_lims[1] is not None and np.isfinite(dec_lims[1]):
+                rec_tiles = rec_tiles & (decs <= dec_lims[1])
+        rec_tiles = np.flatnonzero(rec_tiles)
+        if len(rec_tiles) == 0:
+            log.warning("Nothing to show")
+            return False
+        if len(rec_tiles) < len(table_fluxes):
+            ras = ras[rec_tiles]
+            decs = decs[rec_tiles]
+            table_fluxes = table_fluxes[rec_tiles]
 
-    ra_cen = (ra_0 + ra_1)/2.
-    dec_cen = (dec_0 + dec_1) / 2.
-    nx = np.ceil((ra_0 - ra_1)*max([np.cos(dec_0/180.*np.pi),np.cos(dec_1/180.*np.pi)])/pxscale_out*3600./2.).astype(int)*2+1
-    ny = np.ceil((dec_1 - dec_0) / pxscale_out * 3600./2.).astype(int)*2+1
-    ra_0 = np.round(ra_cen + (nx-1)/2 * pxscale_out / 3600. / max([np.cos(dec_0/180.*np.pi),np.cos(dec_1/180.*np.pi)]),6)
-    dec_0 = np.round(dec_cen - (ny - 1) / 2 * pxscale_out/ 3600., 6)
-    ra_cen = np.round(ra_cen, 6)
-    dec_cen = np.round(dec_cen, 6)
-    # Create a new WCS object.  The number of axes must be set
-    # from the start
-    wcs_out = WCS(naxis=2)
-    wcs_out.wcs.crpix = [(nx-1)/2+1, (ny-1)/2+1]
-    wcs_out.wcs.cdelt = np.array([-np.round(pxscale_out/3600.,6), np.round(pxscale_out/3600.,6)])
-    wcs_out.wcs.crval = [ra_cen, dec_cen]
-    wcs_out.wcs.cunit = ['deg', 'deg']
-    wcs_out.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        dec_0 = np.min(decs)-37./2/3600
+        dec_1 = np.max(decs) + 37. / 2 / 3600
+        ra_0 = np.max(ras)+37./2/3600/np.cos(dec_1/180*np.pi)
+        ra_1 = np.min(ras) - 37. / 2 / 3600 / np.cos(dec_0 / 180 * np.pi)
 
-    shape_out = (ny, nx)
-    grid_scl = wcs_out.proj_plane_pixel_scales()[0].value * 3600.
+        ra_cen = (ra_0 + ra_1)/2.
+        dec_cen = (dec_0 + dec_1) / 2.
+        nx = np.ceil((ra_0 - ra_1)*max([np.cos(dec_0/180.*np.pi),np.cos(dec_1/180.*np.pi)])/pxscale_out*3600./2.).astype(int)*2+1
+        ny = np.ceil((dec_1 - dec_0) / pxscale_out * 3600./2.).astype(int)*2+1
+        ra_0 = np.round(ra_cen + (nx-1)/2 * pxscale_out / 3600. / max([np.cos(dec_0/180.*np.pi),np.cos(dec_1/180.*np.pi)]),6)
+        dec_0 = np.round(dec_cen - (ny - 1) / 2 * pxscale_out/ 3600., 6)
+        ra_cen = np.round(ra_cen, 6)
+        dec_cen = np.round(dec_cen, 6)
+        # Create a new WCS object.  The number of axes must be set
+        # from the start
+        wcs_out = WCS(naxis=2)
+        wcs_out.wcs.crpix = [(nx-1)/2+1, (ny-1)/2+1]
+        wcs_out.wcs.cdelt = np.array([-np.round(pxscale_out/3600.,6), np.round(pxscale_out/3600.,6)])
+        wcs_out.wcs.crval = [ra_cen, dec_cen]
+        wcs_out.wcs.cunit = ['deg', 'deg']
+        wcs_out.wcs.ctype = ["RA---TAN", "DEC--TAN"]
 
-    log.info(f"Grid scale: {np.round(grid_scl,1)}, output shape: {nx}x{ny}, "
-             f"RA range: {np.round(ra_1,4)} - {np.round(ra_0,4)}, "
-             f"DEC range: {np.round(dec_0,4)} - {np.round(dec_1,4)} ")
+        shape_out = (ny, nx)
+        grid_scl = wcs_out.proj_plane_pixel_scales()[0].value * 3600.
+
+        log.info(f"Grid scale: {np.round(grid_scl,1)}, output shape: {nx}x{ny}, "
+                 f"RA range: {np.round(ra_1,4)} - {np.round(ra_0,4)}, "
+                 f"DEC range: {np.round(dec_0,4)} - {np.round(dec_1,4)} ")
+
 
     # img_arr = np.zeros((ny, nx), dtype=float)
     # img_arr[:, :] = np.nan
@@ -2045,13 +2084,26 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
     if values is None:
         log.error('Nothing to show.')
         return False
-    if len(values.shape) == 1:
-        values = values.reshape((-1, 1))
-    img_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values,
-                               r_lim=r_lim, sigma=sigma, masks=masks)
-    if values_errs is not None:
-        err_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values_errs,
-                                   r_lim=r_lim, sigma=sigma, masks=masks_errs, is_error=True)
+
+    if binmap is None:
+        if len(values.shape) == 1:
+            values = values.reshape((-1, 1))
+        img_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values,
+                                   r_lim=r_lim, sigma=sigma, masks=masks)
+        if values_errs is not None:
+            err_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values_errs,
+                                       r_lim=r_lim, sigma=sigma, masks=masks_errs, is_error=True)
+    else:
+        img_arr = np.empty(shape=(shape_out[0], shape_out[1], values.shape[1]), dtype=np.float32)
+        err_arr = np.empty(shape=(shape_out[0], shape_out[1], values.shape[1]), dtype=np.float32)
+        img_arr[:] = np.nan
+        err_arr[:] = np.nan
+        xxbin, yybin = np.meshgrid(np.arange(binmap.shape[1]), np.arange(binmap.shape[0]))
+        for bin_ind, bin in enumerate(table_fluxes['binnum']):
+            rec = np.flatnonzero(binmap.ravel() == bin)
+            img_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values[bin_ind, :])[None, None, :]
+            err_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values_errs[bin_ind, :])[None, None, :]
+
     header = wcs_out.to_header()
     for ind in range(img_arr.shape[2]):
         outfile_suffix = names_out[ind]
@@ -2136,7 +2188,10 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
         wave = wl_grid
     else:
         flux, ivar, sky, sky_ivar, lsf, vhel_corr, spec_id = params
-        vhel = np.mean([float(vh) for vh in vhel_corr.split(',')])
+        if isinstance(vhel_corr, str):
+            vhel = np.mean([float(vh) for vh in vhel_corr.split(',')])
+        else:
+            vhel = float(np.nanmean(vhel_corr))
         wave = ((np.arange(header['NAXIS1']) - header['CRPIX1'] + 1) * header['CDELT1'] + header['CRVAL1'])
     error = 1./np.sqrt(ivar)
     sky_error = 1./np.sqrt(sky_ivar)
@@ -2153,7 +2208,7 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
     for sky_line in [5577.338, 6300.304]:
         sel_wave = np.flatnonzero((wave >= (sky_line - wid)) & (wave <= (sky_line + wid)))
         (fluxes, vel, disp, cont, fluxes_err, v_err,
-         sigma_err, cont_err) = fit_cur_spec((sky[sel_wave], sky_error[sel_wave], lsf[sel_wave]),
+         sigma_err, cont_err, _, _) = fit_cur_spec_lmfit((sky[sel_wave], sky_error[sel_wave], lsf[sel_wave]),
                                              wave=wave[sel_wave],
                                              mean_bounds=(-1.5, 1.5),
                                              lines=[float(sky_line)],
@@ -2162,11 +2217,11 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
         res_output[f'SKY{int(sky_line)}_flux'] = fluxes[0]
         res_output[f'SKY{int(sky_line)}_fluxerr'] = fluxes_err[0]
         res_output[f'SKY{int(sky_line)}_vel'] = vel[0]
-        res_output[f'SKY{int(sky_line)}_velerr'] = v_err
+        res_output[f'SKY{int(sky_line)}_velerr'] = v_err[0]
         res_output[f'SKY{int(sky_line)}_disp'] = disp[0]
-        res_output[f'SKY{int(sky_line)}_disperr'] = sigma_err
-        res_output[f'SKY{int(sky_line)}_cont'] = cont
-        res_output[f'SKY{int(sky_line)}_conterr'] = cont_err
+        res_output[f'SKY{int(sky_line)}_disperr'] = sigma_err[0]
+        res_output[f'SKY{int(sky_line)}_cont'] = cont[0]
+        res_output[f'SKY{int(sky_line)}_conterr'] = cont_err[0]
         # if int(np.round(sky_line)) == 6300:
         #     vel_sky_correct = vel
 
@@ -2240,14 +2295,23 @@ def quickflux_single_rss(rsshdu, wrange, crange=None, selection=None, include_sk
 
     selwave_extended = (wave >= (min(wrange)-100)) * (wave <= (max(wrange)+100))
     wave = wave[selwave_extended]
-    if include_sky:
-        flux_all = (rsshdu['FLUX_ORIG'].data + rsshdu['SKY'].data)[:, selwave_extended]
-    elif partial_sky:
-        flux_all = rsshdu['FLUX'].data[:, selwave_extended]
+    if 'FLUX_ORIG' in rsshdu:
+        if include_sky:
+            flux_all = (rsshdu['FLUX_ORIG'].data + rsshdu['SKY'].data)[:, selwave_extended]
+        elif partial_sky:
+            flux_all = rsshdu['FLUX'].data[:, selwave_extended]
+        else:
+            flux_all = rsshdu["FLUX_ORIG"].data[:, selwave_extended]
     else:
-        flux_all = rsshdu["FLUX_ORIG"].data[:, selwave_extended]
+        if include_sky:
+            flux_all = (rsshdu['FLUX'].data + rsshdu['SKY'].data)[:, selwave_extended]
+        else:
+            flux_all = rsshdu['FLUX'].data[:, selwave_extended]
     errors_all = rsshdu["IVAR"].data[:, selwave_extended]
-    mask_all = rsshdu["MASK"].data[:, selwave_extended]
+    if 'MASK' in rsshdu:
+        mask_all = rsshdu["MASK"].data[:, selwave_extended]
+    else:
+        mask_all = np.zeros_like(flux_all)
 
     selwave = (wave >= wrange[0]) * (wave <= wrange[1])
     cwave = np.mean(wave[selwave])
@@ -2316,7 +2380,7 @@ def quickflux_single_rss(rsshdu, wrange, crange=None, selection=None, include_sk
     return flux_rss, np.sqrt(error_rss)
 
 
-def process_single_rss(config, output_dir=None):
+def process_single_rss(config, output_dir=None, binned=False):
     """
     Create table with fluxes from a single rss file
     :param config:
@@ -2332,10 +2396,29 @@ def process_single_rss(config, output_dir=None):
         output_dir = None
 
     statuses = []
+
     for cur_obj in config['object']:
         status_out = True
-        f_rss = os.path.join(output_dir, cur_obj['name'], f"{cur_obj['name']}_all_RSS.fits")
-        f_tab = os.path.join(output_dir, cur_obj['name'], f"{cur_obj['name']}_fluxes_singleRSS.txt")
+        if not binned:
+            f_rss = os.path.join(output_dir, cur_obj['name'], f"{cur_obj['name']}_all_RSS.fits")
+            f_tab = os.path.join(output_dir, cur_obj['name'], f"{cur_obj['name']}_fluxes_singleRSS.txt")
+        else:
+            suffix_out = config['binning'].get('rss_output_suffix')
+            if not suffix_out:
+                suffix_out = '_vorbin_rss.fits'
+            suffix_binmap = config['binning'].get('binmap_suffix')
+            if not suffix_binmap:
+                suffix_binmap = '_binmap.fits'
+            bin_line = config['binning'].get('line')
+            if not bin_line:
+                bin_line = 'Ha'
+            target_sn = config['binning'].get('target_sn')
+            if not target_sn:
+                target_sn = 30.
+            else:
+                target_sn = float(target_sn)
+            f_rss = os.path.join(output_dir, cur_obj['name'], f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
+            f_tab = os.path.join(output_dir, cur_obj['name'], f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
         if not os.path.isfile(f_rss):
             log.error(f"File {f_rss} doesn't exist.")
             statuses.append(False)
@@ -2344,15 +2427,19 @@ def process_single_rss(config, output_dir=None):
         if cur_obj['name'] == 'Orion':
             mean_bounds = (-2, 2)
         else:
-            mean_bounds = (-5, 5)
+            mean_bounds = (-10, 10)
         vel = cur_obj.get('velocity')
 
         rss = fits.open(f_rss)
         table_fibers = Table(rss['SLITMAP'].data)
+
         if not config['imaging'].get('override_flux_table') and os.path.isfile(f_tab):
             table_fluxes = Table.read(f_tab, format='ascii.fixed_width_two_line')
         else:
-            table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec'].copy()
+            if binned:
+                table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec', 'binnum'].copy()
+            else:
+                table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec'].copy()
 
         line_fit_params = []
 
@@ -2366,14 +2453,21 @@ def process_single_rss(config, output_dir=None):
         dw = wave[1] - wave[0]
         selwave = (wave >= (6380*(vel / 3e5 + 1))) & (wave <= (6480*(vel / 3e5 + 1)))
         wave = wave[selwave]
-        if config['imaging'].get('include_sky'):
-            flux_all = (rss['FLUX_ORIG'].data + rss['SKY'].data)[:, selwave]
-        elif config['imaging'].get('partial_sky'):
-            flux_all = rss['FLUX'].data[:, selwave]
+        if 'FLUX_ORIG' in rss:
+            if config['imaging'].get('include_sky'):
+                flux_all = (rss['FLUX_ORIG'].data + rss['SKY'].data)[:, selwave]
+            elif config['imaging'].get('partial_sky'):
+                flux_all = rss['FLUX'].data[:, selwave]
+            else:
+                flux_all = rss["FLUX_ORIG"].data[:, selwave]
         else:
-            flux_all = rss["FLUX_ORIG"].data[:, selwave]
-        mask_all = rss["MASK"].data[:, selwave]
-        flux_all[mask_all > 0] = np.nan
+            if config['imaging'].get('include_sky'):
+                flux_all = (rss['FLUX'].data + rss['SKY'].data)[:, selwave]
+            else:
+                flux_all = rss["FLUX"].data[:, selwave]
+        if 'MASK' in rss:
+            mask_all = rss["MASK"].data[:, selwave]
+            flux_all[mask_all > 0] = np.nan
         flux_all[flux_all == 0] = np.nan
         for kw in ['R_cont_med', 'R_cont_err']:
             if kw not in table_fluxes.colnames:
@@ -2413,6 +2507,7 @@ def process_single_rss(config, output_dir=None):
                 flux, err = quickflux_single_rss(rss, wl_range, crange=cont_range,
                                                  include_sky=config['imaging'].get('include_sky'),
                                                  partial_sky=config['imaging'].get('partial_sky'))
+
                 table_fluxes[f'{line_name}_flux'][:] = flux
                 table_fluxes[f'{line_name}_fluxerr'][:] = err
             else:
@@ -2433,7 +2528,7 @@ def process_single_rss(config, output_dir=None):
                 tie_vel = line.get('tie_vel')
                 if tie_vel is None:
                     tie_vel = [True]*len(line_fit)
-                tie_vel = line.get('tie_disp')
+                tie_disp = line.get('tie_disp')
                 if tie_disp is None:
                     tie_disp = [True]*len(line_fit)
                 max_comps = line.get('max_comps')
@@ -2462,27 +2557,42 @@ def process_single_rss(config, output_dir=None):
             local_statuses = []
             all_plot_data = []
 
-            if config['imaging'].get('include_sky'):
-                flux = rss['FLUX_ORIG'].data + rss['SKY'].data
-                flux[~np.isfinite(rss['FLUX_ORIG'].data) | (
-                            rss['FLUX_ORIG'].data == 0)] = np.nan
-            elif config['imaging'].get('partial_sky'):
-                flux = rss['FLUX'].data
-                flux[flux == 0] = np.nan
+            if 'FLUX_ORIG' in rss:
+                if config['imaging'].get('include_sky'):
+                    flux = rss['FLUX_ORIG'].data + rss['SKY'].data
+                    flux[~np.isfinite(rss['FLUX_ORIG'].data) | (
+                                rss['FLUX_ORIG'].data == 0)] = np.nan
+                elif config['imaging'].get('partial_sky'):
+                    flux = rss['FLUX'].data
+                    flux[flux == 0] = np.nan
+                else:
+                    flux = rss['FLUX_ORIG'].data
+                    flux[flux == 0] = np.nan
             else:
-                flux = rss['FLUX_ORIG'].data
-                flux[flux == 0] = np.nan
+                if config['imaging'].get('include_sky'):
+                    flux = rss['FLUX'].data + rss['SKY'].data
+                    flux[~np.isfinite(rss['FLUX'].data) | (
+                                rss['FLUX'].data == 0)] = np.nan
+                else:
+                    flux = rss['FLUX'].data
+                    flux[flux == 0] = np.nan
             if mean_bounds is None:
                 mean_bounds = (-5, 5)
             sky = rss['SKY'].data
             sky_ivar = rss['SKY_IVAR'].data
-            sky[(rss['MASK'].data > 0) ] = np.nan #| (rss['SKY'].data == 0)
+            if 'MASK' in rss:
+                sky[(rss['MASK'].data > 0) ] = np.nan #| (rss['SKY'].data == 0)
             ivar = rss['IVAR'].data
             lsf = rss['LSF'].data
-            flux[(rss['MASK'].data > 0)] = np.nan
+            if 'MASK' in rss:
+                flux[(rss['MASK'].data > 0)] = np.nan
             header = rss['FLUX'].header
 
-            vhel = Table(rss['SLITMAP'].data)['vhel_corr']
+            t = Table(rss['SLITMAP'].data)
+            if 'vhel_corr' in t.colnames:
+                vhel = t['vhel']
+            else:
+                vhel = np.zeros_like(flux)
             params = zip(flux, ivar, sky, sky_ivar, lsf, vhel, spec_ids)
             with mp.Pool(processes=nprocs) as pool:
                 for status, fit_res, plot_data, spec_id in tqdm(
@@ -2594,7 +2704,14 @@ def vorbin_rss(config, w_dir=None):
             bin_image = np.zeros_like(signal, dtype=int) - 1
             bin_image.ravel()[rec] = binnum
             # bin_image = binnum.reshape(signal.shape)
-            fits.writeto(f_binmap, data=bin_image, header=header, overwrite=True)
+
+            wcs = WCS(header)
+            radec_bin = wcs.pixel_to_world(x_bar, y_bar)
+            tab_summary_bins = Table(data=[np.unique(binnum), radec_bin.ra.degree, radec_bin.dec.degree, ['science']*len(radec_bin),
+                                           [0]*len(radec_bin)], names=['fiberid', 'fib_ra', 'fib_dec', 'targettype',
+                                                       'fibstatus'], dtype=(int, float, float, str, int))
+            hdu_out = fits.HDUList([fits.PrimaryHDU(data=bin_image, header=header), fits.BinTableHDU(tab_summary_bins)])
+            hdu_out.writeto(f_binmap, overwrite=True)
         else:
             if not os.path.isfile(f_binmap):
                 log.error(f"Binmap in {bin_line} is not found be created in 'maps' folder for {cur_obj.get('name')}."
@@ -2602,7 +2719,9 @@ def vorbin_rss(config, w_dir=None):
                           f"with what is indicated in 'imaging' block. Otherwise, set 'use_binmap' to false")
                 statuses.append(False)
                 continue
-            bin_image = fits.getdata(f_binmap)
+            with fits.open(f_binmap) as hdu:
+                bin_image = hdu[0].data
+                tab_summary_bins = Table(hdu[1].data)
 
 
         tab = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
@@ -2630,6 +2749,7 @@ def vorbin_rss(config, w_dir=None):
                 correct_vel_line = None
         else:
             correct_vel_line = None
+
         for cur_bin_id, cur_bin in enumerate(uniq_bins):
             in_reg = np.flatnonzero(tab['binnum'] == cur_bin)
             if correct_vel_line is not None:
@@ -2663,35 +2783,48 @@ def vorbin_rss(config, w_dir=None):
                 gc.collect()
             res = np.array(res)
 
-            cur_flux = np.atleast_2d(np.nanmean(res[:, 0, :], axis=0) / np.pi / (fiber_d ** 2 / 4))
-            cur_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 1, :] ** 2, axis=0)) / np.pi / (fiber_d ** 2 / 4))
-            cur_sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0) / np.pi / (fiber_d ** 2 / 4))
-            cur_sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0)) / np.pi / (fiber_d ** 2 / 4))
+            cur_flux = np.atleast_2d(np.nanmean(res[:, 0, :], axis=0))# / np.pi / (fiber_d ** 2 / 4))
+            cur_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 1, :] ** 2, axis=0)))# / np.pi / (fiber_d ** 2 / 4))
+            cur_sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0))# / np.pi / (fiber_d ** 2 / 4))
+            cur_sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0)))# / np.pi / (fiber_d ** 2 / 4))
+            cur_lsf = np.atleast_2d(np.nanmean(res[:, 5, :], axis=0))
 
             if cur_bin_id == 0:
-                flux = np.empty(shape=(max(tab['binnum'])+1, cur_flux.shape[1]), dtype=float)
-                error = np.empty(shape=(max(tab['binnum'])+1, cur_flux.shape[1]), dtype=float)
-                sky = np.empty(shape=(max(tab['binnum'])+1, cur_flux.shape[1]), dtype=float)
-                sky_error = np.empty(shape=(max(tab['binnum'])+1, cur_flux.shape[1]), dtype=float)
+                flux = np.empty(shape=(len(uniq_bins), cur_flux.shape[1]), dtype=float)
+                error = np.empty(shape=(len(uniq_bins), cur_flux.shape[1]), dtype=float)
+                sky = np.empty(shape=(len(uniq_bins), cur_flux.shape[1]), dtype=float)
+                sky_error = np.empty(shape=(len(uniq_bins), cur_flux.shape[1]), dtype=float)
+                lsf = np.empty(shape=(len(uniq_bins), cur_flux.shape[1]), dtype=float)
+                tab_summary_bins_resorted = Table(data=None, names=['fiberid', 'fib_ra',
+                                                                    'fib_dec', 'targettype', 'fibstatus', 'binnum'],
+                                                  dtype=(int, float, float, str, int, int))
 
-            flux[cur_bin] = cur_flux[0,:]
-            error[cur_bin] = cur_error[0, :]
-            sky[cur_bin] = cur_sky[0, :]
-            sky_error[cur_bin] = cur_sky_error[0, :]
+            rec = tab_summary_bins['fiberid'] == cur_bin
+            tab_summary_bins_resorted.add_row([tab_summary_bins['fiberid'][rec], tab_summary_bins['fib_ra'][rec],
+                                               tab_summary_bins['fib_dec'][rec], tab_summary_bins['targettype'][rec],
+                                               tab_summary_bins['fibstatus'][rec],
+                                               cur_bin])
+            flux[cur_bin_id] = cur_flux[0,:]
+            error[cur_bin_id] = cur_error[0, :]
+            sky[cur_bin_id] = cur_sky[0, :]
+            sky_error[cur_bin_id] = cur_sky_error[0, :]
+            lsf[cur_bin_id] = cur_lsf[0, :]
 
         hdu_flux = fits.ImageHDU(data=np.array(flux, dtype=np.float32), name='FLUX')
-        hdu_ivar = fits.ImageHDU(data=np.array(1/error**2, dtype=np.float32), name='IVAR')
+        hdu_ivar = fits.ImageHDU(data=np.array(1/error**2, dtype=float), name='IVAR')
         hdu_sky = fits.ImageHDU(data=np.array(sky, dtype=np.float32), name='SKY')
-        hdu_sky_ivar = fits.ImageHDU(data=np.array(1 / sky_error ** 2, dtype=np.float32), name='SKY_IVAR')
-        for hdu in [hdu_flux, hdu_ivar, hdu_sky, hdu_sky_ivar]:
+        hdu_sky_ivar = fits.ImageHDU(data=np.array(1 / sky_error ** 2, dtype=float), name='SKY_IVAR')
+        hdu_lsf = fits.ImageHDU(data=np.array(lsf, dtype=np.float32), name='LSF')
+        for hdu in [hdu_flux, hdu_ivar, hdu_sky, hdu_sky_ivar, hdu_lsf]:
             hdu.header['CRVAL1'] = res[0, 4, 0]
             hdu.header['CRPIX1'] = 1
             hdu.header['CDELT1'] = res[0, 4, 1] - res[0, 4, 0]
             hdu.header['CTYPE1'] = 'WAV-AWAV'
             hdu_out.append(hdu)
+
+        hdu_out.append(fits.BinTableHDU(tab_summary_bins_resorted, name='SLITMAP'))
         f_out = os.path.join(cur_wdir, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
         hdu_out.writeto(f_out, overwrite=True)
-
 
     return np.all(statuses)
 
@@ -2882,6 +3015,7 @@ def extract_spectrum_for_cur_fiber(params):
                 ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
                 sky = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
                 sky_ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
+                lsf = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
             if partial_sky:
                 flux[ind, :] = ((hdu['FLUX'].data[fib_id, :] + hdu['SKY'].data[fib_id, :]) -
                                 mask_sky_at_bright_lines(hdu['SKY'].data[fib_id, :], wave=wl_grid,
@@ -2893,8 +3027,10 @@ def extract_spectrum_for_cur_fiber(params):
             ivar[ind, :] = hdu['IVAR'].data[fib_id, :] / flux_corr ** 2
             sky[ind, :] = hdu['SKY'].data[fib_id, :] * flux_corr
             sky_ivar[ind, :] = hdu['SKY_IVAR'].data[fib_id, :] / flux_corr ** 2
+            lsf[ind, :] = hdu['LSF'].data[fib_id, :]
             flux[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
             sky[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
+
 
         delta_v = float(float(vhel_corrs[ind]) - corr_vel_line)
         if delta_v > 2.:
@@ -2909,8 +3045,10 @@ def extract_spectrum_for_cur_fiber(params):
         sky_ivar = 1 / (np.nansum(1 / sky_ivar, axis=0) / np.sum(np.isfinite(sky_ivar), axis=0) ** 2)
         error = 1/np.sqrt(ivar)
         sky_error = 1 / np.sqrt(sky_ivar)
+        lsf = np.nanmean(lsf, axis=0)
 
-    return flux, error, sky, sky_error, wl_grid
+
+    return flux, error, sky, sky_error, wl_grid, lsf
 
 def reconstruct_cube(config, w_dir=None):
     statuses = []
