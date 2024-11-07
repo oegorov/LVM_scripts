@@ -216,7 +216,11 @@ def LVM_process(config_filename=None, output_dir=None):
             log.info("Nothing to show. Exit")
             return
         for cur_obj in config['object']:
-            cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+            if not cur_obj.get('version'):
+                version = ''
+            else:
+                version = cur_obj.get('version')
+            cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
             f_binmap = None
             if not os.path.exists(cur_wdir):
                 log.error(
@@ -327,15 +331,21 @@ def LVM_process(config_filename=None, output_dir=None):
 def create_folders_tree(config, w_dir=None):
     try:
         for cur_obj in config['object']:
-            check_dir = os.path.join(w_dir, cur_obj.get('name'))
+            if not cur_obj.get('version'):
+                version = ''
+            else:
+                version = cur_obj.get('version')
+            check_dir = os.path.join(w_dir, cur_obj.get('name'), version)
             if not os.path.exists(check_dir):
                 os.makedirs(check_dir)
                 uid = os.stat(check_dir).st_uid
                 if server_group_id is not None:
                     os.chown(check_dir, uid=uid, gid=server_group_id)
+                    os.chown(os.path.join(w_dir, cur_obj.get('name')), uid=uid, gid=server_group_id)
                 os.chmod(check_dir, 0o775)
+                os.chmod(os.path.join(w_dir, cur_obj.get('name')), 0o775)
             for cur_pointing in cur_obj['pointing']:
-                check_dir = os.path.join(w_dir, cur_obj.get('name'), cur_pointing.get('name'))
+                check_dir = os.path.join(w_dir, cur_obj.get('name'), version, cur_pointing.get('name'))
                 if not os.path.exists(check_dir):
                     os.makedirs(check_dir)
                     uid = os.stat(check_dir).st_uid
@@ -729,8 +739,12 @@ def download_from_sas(config):
     f_reduced = {}
     f_dap = {}
     for cur_obj in config['object']:
-        f_reduced[cur_obj['name']] = {}
-        f_dap[cur_obj['name']] = {}
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
+        f_reduced[cur_obj['name']] = {'version': version}
+        f_dap[cur_obj['name']] = {'version': version}
         for cur_pointing in cur_obj['pointing']:
             if cur_pointing['name'] not in f_reduced[cur_obj['name']]:
                 f_reduced[cur_obj['name']][cur_pointing['name']] = []
@@ -904,14 +918,17 @@ def download_from_sas(config):
         copying_type = ['reduced frames', 'DAP results']
         for ind, cur_dict in enumerate([f_reduced, f_dap]):
             for obj_name in cur_dict:
+                version = cur_dict[obj_name]['version']
                 for pointing_name in cur_dict[obj_name]:
+                    if pointing_name == 'version':
+                        continue
                     if len(cur_dict[obj_name][pointing_name]) == 0:
                         log.warning(f"Nothing to copy for object = {obj_name}, pointing = {pointing_name} ({copying_type[ind]})")
                         continue
                     if not pointing_name:
-                        curdir = os.path.join(output_dir, obj_name)
+                        curdir = os.path.join(output_dir, obj_name, version)
                     else:
-                        curdir = os.path.join(output_dir, obj_name, pointing_name)
+                        curdir = os.path.join(output_dir, obj_name, version, pointing_name)
                     if not os.path.exists(curdir):
                         os.makedirs(curdir)
                         uid = os.stat(curdir).st_uid
@@ -1097,16 +1114,19 @@ def copy_reduced_data(config, output_dir=None):
         return False
 
     for cur_obj in config['object']:
-
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
         for cur_pointing in cur_obj['pointing']:
             if cur_pointing['skip'].get('reduction'):
                 log.warning(
                     f"Skip copy reduced spectra for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
                 continue
             if not cur_pointing.get('name'):
-                curdir = os.path.join(output_dir, cur_obj['name'])
+                curdir = os.path.join(output_dir, cur_obj['name'], version)
             else:
-                curdir = os.path.join(output_dir, cur_obj['name'], cur_pointing.get('name'))
+                curdir = os.path.join(output_dir, cur_obj['name'], version, cur_pointing.get('name'))
             if not os.path.exists(curdir):
                 os.makedirs(curdir)
                 uid = os.stat(curdir).st_uid
@@ -1181,7 +1201,11 @@ def do_coadd_spectra(config, w_dir=None):
 
     statuses = []
     for cur_obj in config['object']:
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
         if not os.path.exists(cur_wdir):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
@@ -1262,8 +1286,12 @@ def parse_dap_results(config, w_dir=None):
         return False
     status_out = True
     for cur_obj in config['object']:
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
         log.info(f"Parsing DAP results for {cur_obj.get('name')}.")
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
         if not os.path.exists(cur_wdir):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             status_out = status_out & False
@@ -1448,9 +1476,13 @@ def process_all_rss(config, w_dir=None):
         precision_fiber = 1.5
 
     for cur_obj in config['object']:
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
         status_out = True
         log.info(f"Analysing RSS files for {cur_obj.get('name')}.")
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
         if not os.path.exists(cur_wdir):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
@@ -2409,10 +2441,14 @@ def process_single_rss(config, output_dir=None, binned=False):
     statuses = []
 
     for cur_obj in config['object']:
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
         status_out = True
         if not binned:
-            f_rss = os.path.join(output_dir, cur_obj['name'], f"{cur_obj['name']}_all_RSS.fits")
-            f_tab = os.path.join(output_dir, cur_obj['name'], f"{cur_obj['name']}_fluxes_singleRSS.txt")
+            f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj['name']}_all_RSS.fits")
+            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj['name']}_fluxes_singleRSS.txt")
         else:
             suffix_out = config['binning'].get('rss_output_suffix')
             if not suffix_out:
@@ -2428,8 +2464,8 @@ def process_single_rss(config, output_dir=None, binned=False):
                 target_sn = 30.
             else:
                 target_sn = float(target_sn)
-            f_rss = os.path.join(output_dir, cur_obj['name'], f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
-            f_tab = os.path.join(output_dir, cur_obj['name'], f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
+            f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
+            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
         if not os.path.isfile(f_rss):
             log.error(f"File {f_rss} doesn't exist.")
             statuses.append(False)
@@ -2672,8 +2708,12 @@ def vorbin_rss(config, w_dir=None):
     else:
         target_sn = float(target_sn)
     for cur_obj in config['object']:
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
         log.info(f"Binning data for {cur_obj.get('name')}.")
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
         if not os.path.exists(cur_wdir):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
@@ -2860,8 +2900,12 @@ def extract_spectra_ds9(config, w_dir=None):
         suffix_out = '_extracted.fits'
 
     for cur_obj in config['object']:
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
         log.info(f"Extracting spectra for {cur_obj.get('name')}.")
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
         if not os.path.exists(cur_wdir):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
@@ -3079,8 +3123,12 @@ def reconstruct_cube(config, w_dir=None):
         log.warning("Cannot find sigma in config. Use 2 arcsec")
         sigma = 2
     for cur_obj in config['object']:
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
         log.info(f"Constructing data cube for {cur_obj.get('name')} in {config['cube_reconstruction'].get('suffix')}.")
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
         outfile = os.path.join(cur_wdir, cur_obj.get('name')+
                                f"_cube_{config['cube_reconstruction'].get('suffix')}.fits" )
         if not os.path.exists(cur_wdir):
@@ -3433,7 +3481,11 @@ def check_noise_level(config, w_dir=None):
 
     statuses = []
     for cur_obj in config['object']:
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
         if not os.path.exists(cur_wdir):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
@@ -3502,8 +3554,12 @@ def create_single_rss(config, w_dir=None):
 
     statuses = []
     for cur_obj in config['object']:
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
         log.info(f"Creating single RSS file for {cur_obj.get('name')}.")
-        cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+        cur_wdir = os.path.join(w_dir, cur_obj.get('name'), version)
         if not os.path.exists(cur_wdir):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
