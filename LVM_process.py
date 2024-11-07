@@ -49,9 +49,9 @@ log.addHandler(ch)
 # ========================
 # ======== Setup =========
 # ========================
-red_data_version = '1.0.3'
+red_data_version = '1.1.0'
 dap_version = '1.0.3'
-drp_version = '1.0.4dev'
+drp_version = '1.1.1dev'
 # os.environ['LVMDRP_VERSION'] = drp_version
 agcam_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'agcam', 'lco')
 raw_data_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'lvm', 'lco')
@@ -126,12 +126,14 @@ def LVM_process(config_filename=None, output_dir=None):
 
     # === Step 3 - reduce all exposures listed in config
     if config['steps'].get('reduction'):
-        status = do_reduction(config)
-        if not status:
-            log.error("Critical errors occurred. Exit.")
-            return
-        log.info("Reduction complete")
-
+        if not config['reduction'].get('only_copy_files'):
+            status = do_reduction(config)
+            if not status:
+                log.error("Critical errors occurred. Exit.")
+                return
+            log.info("Reduction complete")
+        else:
+            log.info("Skip reduction, only copy reduced files")
         copy_reduced_data(config, output_dir=output_dir)
 
     else:
@@ -215,6 +217,7 @@ def LVM_process(config_filename=None, output_dir=None):
             return
         for cur_obj in config['object']:
             cur_wdir = os.path.join(w_dir, cur_obj.get('name'))
+            f_binmap = None
             if not os.path.exists(cur_wdir):
                 log.error(
                     f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
@@ -1156,11 +1159,19 @@ def copy_reduced_data(config, output_dir=None):
                 log.warning(f"Nothing to copy for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
                 continue
             log.info(f"Copy {len(source_files)} for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
+            bad_expnums = []
             for sf in tqdm(source_files, total=len(source_files)):
+                if not os.path.isfile(sf):
+                    bad_expnums.append(sf.split('-')[-1].split('.')[0])
+                    continue
                 fname = os.path.join(curdir, os.path.split(sf)[-1])
                 if os.path.exists(fname):
                     os.remove(fname)
                 shutil.copy(sf, curdir)
+            if len(bad_expnums) > 0:
+                log.warning(f"{len(bad_expnums)} files were not copied because they are not found in "
+                            f"the directory with the reduced data. Probably, data reduction failed, check logs. "
+                            f"Their exnums are: {', '.join(bad_expnums)}")
 
 
 def do_coadd_spectra(config, w_dir=None):
