@@ -1106,6 +1106,29 @@ def do_reduction(config):
     return True
 
 
+def fix_astrometry(file, first_exp=None):
+    with fits.open(file) as hdu:
+        slitmap = Table(hdu['SLITMAP'].data)
+        h = hdu[0].header
+        h_tab = hdu['SLITMAP'].header
+        check_fiber = np.flatnonzero((slitmap['xpmm'] == 0) & (slitmap['ypmm'] == 0) & (slitmap['telescope'] == 'Sci'))
+        if not (np.isclose(slitmap['ra'][check_fiber], 0) & np.isclose(slitmap['dec'][check_fiber], 0)):
+            return
+        log.warning(f"Update astrometry for mjd={h.get('MJD')}, exp={h.get('EXPOSURE')} from agcam image")
+        pointing = os.path.split(file)[0].split(os.sep)[-1]
+        w_dir=os.sep.join(os.path.split(file)[0].split(os.sep)[:-1])
+        ra, dec, pa = derive_radec_ifu(h.get('MJD'), h.get('EXPOSURE'), w_dir=w_dir,
+                                   pointing_name=pointing, objname='', first_exp=first_exp)
+        rec_sci = (slitmap['telescope'] == 'Sci')
+
+        ra_fib, dec_fib = make_radec(slitmap['xpmm'][rec_sci], slitmap['ypmm'][rec_sci],
+                                     ra, dec, pa)
+
+        slitmap['ra'][rec_sci] = ra_fib
+        slitmap['dec'][rec_sci] = dec_fib
+        hdu['SLITMAP'] = fits.BinTableHDU(data=slitmap, header=h_tab, name='SLITMAP')
+        hdu.writeto(file, overwrite=True)
+
 def copy_reduced_data(config, output_dir=None):
     if output_dir is None:
         output_dir = config.get('default_output_dir')
@@ -1135,6 +1158,7 @@ def copy_reduced_data(config, output_dir=None):
                 os.chmod(curdir, 0o775)
 
             source_files = []
+            first_exps = []
             for data in cur_pointing['data']:
                 if isinstance(data['exp'], int):
                     exps = [data['exp']]
@@ -1172,15 +1196,17 @@ def copy_reduced_data(config, output_dir=None):
                             short_tileid = tileids[exp_ind][:4] + 'XX'
                     source_files.append(os.path.join(drp_results_dir, short_tileid, str(tileids[exp_ind]),
                                                      str(data['mjd']), f'lvmSFrame-{exp:08d}.fits'))
+                    first_exps.append(exps[0])
                     if config['reduction'].get('copy_cframes'):
                         source_files.append(os.path.join(drp_results_dir, short_tileid, str(tileids[exp_ind]),
                                                          str(data['mjd']), f'lvmCFrame-{exp:08d}.fits'))
+                        first_exps.append(exps[0])
             if len(source_files) == 0:
                 log.warning(f"Nothing to copy for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
                 continue
             log.info(f"Copy {len(source_files)} for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
             bad_expnums = []
-            for sf in tqdm(source_files, total=len(source_files)):
+            for file_id, sf in tqdm(enumerate(source_files), total=len(source_files)):
                 if not os.path.isfile(sf):
                     bad_expnums.append(sf.split('-')[-1].split('.')[0])
                     continue
@@ -1188,6 +1214,7 @@ def copy_reduced_data(config, output_dir=None):
                 if os.path.exists(fname):
                     os.remove(fname)
                 shutil.copy(sf, curdir)
+                fix_astrometry(fname, first_exp=first_exps[file_id])
             if len(bad_expnums) > 0:
                 log.warning(f"{len(bad_expnums)} files were not copied because they are not found in "
                             f"the directory with the reduced data. Probably, data reduction failed, check logs. "
@@ -1993,7 +2020,8 @@ def derive_radec_ifu(mjd, expnum, first_exp=None, objname=None, pointing_name=No
             if objname is None or pointing_name is None:
                 rssfile_ref = f"{LVMDATA_DIR}/{mjd}/lvmSFrame-{first_exp:0>8}.fits"
             else:
-                rssfile_ref = f"/data/LVM/Reduced/{objname}/{pointing_name}/lvmSFrame-{first_exp:0>8}.fits"
+                rssfile_ref = os.path.join(w_dir, pointing_name, f'lvmSFrame-{first_exp:0>8}.fits')
+                # f"/data/LVM/Reduced/{objname}/{pointing_name}/lvmSFrame-{first_exp:0>8}.fits"
             hdr_ref = fits.getheader(rssfile_ref)
             pa_hdr_ref = hdr_ref.get('POSCIPA')
             if not pa_hdr_ref:
