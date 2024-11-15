@@ -1491,7 +1491,7 @@ def calc_bgr(data):
     :param data:
     :return:
     """
-    return np.nanmedian(data[(data<np.nanpercentile(data, 60)) & (data>np.nanpercentile(data, 5))])
+    return 0#np.nanmedian(data[(data<np.nanpercentile(data, 60)) & (data>np.nanpercentile(data, 5))])
 
 def process_all_rss(config, w_dir=None):
     """
@@ -2026,13 +2026,17 @@ def derive_radec_ifu(mjd, expnum, first_exp=None, objname=None, pointing_name=No
             pa_hdr_ref = hdr_ref.get('POSCIPA')
             if not pa_hdr_ref:
                 pa_hdr_ref = 0
-            radec_corr = [hdr['TESCIRA'] - hdr_ref['TESCIRA'], hdr['TESCIDE'] - hdr_ref['TESCIDE'], pa_hdr - pa_hdr_ref]
+            radec_corr = [hdr['POSCIRA'] - hdr_ref['POSCIRA'], hdr['POSCIDE'] - hdr_ref['POSCIDE'], pa_hdr - pa_hdr_ref]
 
     agcam_hdr = fits.getheader(agcscifile, ext=1)
     w = WCS(agcam_hdr)
-    cen = w.pixel_to_world(2500,1000)
+    CDmatrix = w.pixel_scale_matrix
+    posangrad = -1 * np.arctan(CDmatrix[1, 0] / CDmatrix[0, 0])
+    PAobs = posangrad * 180 / np.pi
+    cen = w.pixel_to_world(2500, 1000)
+    # cen = w.pixel_to_world(2500,1000)
     # print(cen.ra.deg+radec_corr[0], cen.dec.deg+radec_corr[1], (agcam_hdr['PAMEAS'] + 180. + radec_corr[2]) % 360.)
-    return cen.ra.deg+radec_corr[0], cen.dec.deg+radec_corr[1], (agcam_hdr['PAMEAS'] + 180. + radec_corr[2]) % 360. #agcam_hdr['PAMEAS'] - 180.
+    return cen.ra.deg+radec_corr[0], cen.dec.deg+radec_corr[1], (PAobs + radec_corr[2]) % 360.#(agcam_hdr['PAMEAS'] + 180. + radec_corr[2]) % 360. #agcam_hdr['PAMEAS'] - 180.
 
 
 def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r_lim=50, sigma=2.,
@@ -3323,9 +3327,27 @@ def rotate(xx,yy,angle):
 def make_radec(xx0,yy0,ra,dec,pa):
     platescale = 112.36748321030637  # Focal plane platescale in "/mm
 
-    xx, yy = rotate(xx0, yy0, pa)
-    ra_fib = ra + xx * platescale/3600./np.cos(np.radians(dec))
-    dec_fib = dec - yy * platescale/3600.
+    pscale = 0.01  # IFU image pixel scale in mm/pix
+    skypscale = pscale * platescale / 3600  # IFU image pixel scale in deg/pix
+    npix = 1800  # size of fake IFU image
+    w = WCS(naxis=2)  # IFU image wcs object
+    w.wcs.crpix = [int(npix / 2) + 1, int(npix / 2) + 1]
+    posangrad = pa * np.pi / 180
+    w.wcs.cd = np.array([[skypscale * np.cos(posangrad), -1 * skypscale * np.sin(posangrad)],
+                            [-1 * skypscale * np.sin(posangrad), -1 * skypscale * np.cos(posangrad)]])
+    w.wcs.crval = [ra, dec]
+    w.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    # Calculate RA,DEC of each individual fiber
+    xfib = xx0 / pscale + int(npix / 2)  # pixel x coordinates of fibers
+    yfib = yy0 / pscale + int(npix / 2)  # pixel y coordinates of fibers
+    fibcoords = w.pixel_to_world(xfib, yfib).to_table()
+    ra_fib = fibcoords['ra'].degree
+    dec_fib = fibcoords['dec'].degree
+
+
+    # xx, yy = rotate(xx0, yy0, pa)
+    # ra_fib = ra + xx * platescale/3600./np.cos(np.radians(dec))
+    # dec_fib = dec - yy * platescale/3600.
     return ra_fib, dec_fib
 
 def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_values=None, r_lim=50., sigma=2.,
@@ -3342,6 +3364,8 @@ def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_v
         # else:
         if masks is None:
             masks = np.tile(np.isfinite(show_values[:, 0]) & (show_values[:, 0] != 0), show_values.shape) # or tile??
+            if len(masks.shape) == 1:
+                masks = masks.reshape((-1, 1))
         # rec_fibers = np.isfinite(show_values[:, 0]) & (show_values[:, 0] != 0)
         rec_fibers = np.any(masks, axis=1)
         masks = masks[rec_fibers]
