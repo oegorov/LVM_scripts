@@ -49,8 +49,8 @@ log.addHandler(ch)
 # ========================
 # ======== Setup =========
 # ========================
-red_data_version = '1.1.0'
-dap_version = '1.0.3'
+red_data_version = '1.1.1'
+dap_version = '1.1.0'
 drp_version = '1.1.1dev'
 # os.environ['LVMDRP_VERSION'] = drp_version
 agcam_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'agcam', 'lco')
@@ -720,11 +720,14 @@ def download_from_sas(config):
     :param config: dictionary with keywords controlling the data processing
     :return: status (success or failure)
     """
+    tmp_for_sdss_access = os.path.join(os.environ['HOME'], 'tmp_for_sdss_access')
+    if not os.path.exists(tmp_for_sdss_access):
+        os.makedirs(tmp_for_sdss_access)
     cams = ['b1', 'b2', 'b3', 'r1', 'r2', 'r3', 'z1', 'z2', 'z3']
     rsync = RsyncAccess(verbose=True)
     # sets a remote mode to the real SAS
     rsync.remote()
-    rsync.set_remote_base("--no-perms --omit-dir-times rsync")
+    rsync.set_remote_base("--no-perms --omit-dir-times  rsync")
     rsync.base_dir = os.environ['SAS_BASE_DIR']+"/"
     counter = 0
     counter_exist = 0
@@ -894,13 +897,14 @@ def download_from_sas(config):
         f"Start downloading files from SAS. It can take several minutes if you ask for many files, please be patient!")
     try:
         rsync.set_stream()
+        rsync.stream.cli.data_dir = tmp_for_sdss_access
         # start the download(s)
         rsync.commit()
-        shutil.rmtree('/tmp/sdss_access')
+        shutil.rmtree(tmp_for_sdss_access)
     except Exception as e:
         log.error(f"Something wrong with rsync: {e}")
         try:
-            shutil.rmtree('/tmp/sdss_access')
+            shutil.rmtree(tmp_for_sdss_access)
         except Exception as e:
             pass
         return False
