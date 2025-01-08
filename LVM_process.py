@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import yaml
 from sdss_access import RsyncAccess
 
 try:
@@ -36,6 +37,9 @@ from regions import Regions
 
 import warnings
 from astropy.utils.exceptions import AstropyWarning, AstropyUserWarning
+
+from argparse import Namespace
+
 warnings.simplefilter('ignore', UserWarning)
 warnings.simplefilter('ignore', AstropyWarning)
 warnings.simplefilter('ignore', AstropyUserWarning)
@@ -45,6 +49,20 @@ log.setLevel(logging.DEBUG)
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
 log.addHandler(ch)
+
+dap_ok = True
+try:
+    from pyFIT3D.common.auto_ssp_tools import dump_rss_output
+    from pyFIT3D.common.auto_ssp_tools import load_rss
+except ModuleNotFoundError:
+    logging.error("pyFIT3D is not installed. Please install it to use DAP fitting with this script.")
+    dap_ok = False
+
+try:
+    from lvmdap._cmdline.dap import auto_rsp_elines_rnd
+except ModuleNotFoundError:
+    logging.error("LVMDAP is not installed. Please install it to use DAP fitting with this script.")
+
 
 # ========================
 # ======== Setup =========
@@ -185,11 +203,21 @@ def LVM_process(config_filename=None, output_dir=None):
 
         if config['imaging'].get('use_single_rss_file'):
             log.info("Analysing a single RSS file and measuring emission lines")
-            status = process_single_rss(config, output_dir=cur_wdir)
+            status = process_single_rss(config, output_dir=cur_wdir, dap=config['imaging'].get('use_dap'))
+            if not status:
+                return
+            if config['imaging'].get('use_dap'):
+                log.info("Processing DAP results")
+                status = parse_dap_results(config, w_dir=cur_wdir, single_rss_results=True)
         elif config['imaging'].get('use_binned_rss_file') and 'binning' in config:
             log.info(f"Analysing binned RSS file ({config['binning'].get('target_sn')} "
                      f"in {config['binning'].get('bin_line')} line) and measuring emission lines")
-            status = process_single_rss(config, output_dir=cur_wdir, binned=True)
+            status = process_single_rss(config, output_dir=cur_wdir, binned=True, dap=config['imaging'].get('use_dap'))
+            if not status:
+                return
+            if config['imaging'].get('use_dap'):
+                log.info("Processing DAP results")
+                status = parse_dap_results(config, w_dir=cur_wdir, single_rss_results=True)
         elif config['imaging'].get('use_binned_rss_file'):
             log.error("'binning' block is not present. Exit.")
             return
@@ -228,8 +256,12 @@ def LVM_process(config_filename=None, output_dir=None):
                 status = False
                 continue
             if config['imaging'].get('use_single_rss_file'):
-                file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.txt")
-                cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS')
+                if config['imaging'].get('use_dap'):
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.txt")
+                    cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS_dap')
+                else:
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.txt")
+                    cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS')
                 line_list = config['imaging'].get('lines')
                 filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
             elif config['imaging'].get('use_binned_rss_file') and 'binning' in config:
@@ -244,14 +276,18 @@ def LVM_process(config_filename=None, output_dir=None):
                 suffix_binmap = config['binning'].get('binmap_suffix')
                 if not suffix_binmap:
                     suffix_binmap = '_binmap.fits'
-                file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
+                if config['imaging'].get('use_dap'):
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
+                    cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS_dap')
+                else:
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
+                    cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS')
                 f_binmap = os.path.join(cur_wdir, 'maps',
                                         f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
                 line_list = config['imaging'].get('lines')
                 if (not os.path.isfile(file_fluxes)) or (not os.path.isfile(f_binmap)):
                     log.error("Either table with fluxes (from binned RSS) or binmap do not exist. Exit.")
                     return
-                cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS')
                 filter_sn = None
             elif config['imaging'].get('use_binned_rss_file'):
                 log.error("'binning' block is not present. Exit.")
@@ -1311,7 +1347,7 @@ def initialize_hist_layout():
     return fig, axes
 
 
-def parse_dap_results(config, w_dir=None):
+def parse_dap_results(config, w_dir=None, single_rss_results=False):
     if w_dir is None or not os.path.exists(w_dir):
         log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
         return False
@@ -1327,7 +1363,28 @@ def parse_dap_results(config, w_dir=None):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             status_out = status_out & False
             continue
-        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
+        if single_rss_results:
+            if config['imaging'].get('use_single_rss_file') and not config['imaging'].get('use_binned_rss_file'):
+                f_dap = os.path.join(cur_wdir, 'dap_output', f"{cur_obj.get('name')}_all_RSS.dap.fits.gz")
+                f_rss = os.path.join(cur_wdir, f"{cur_obj['name']}_all_RSS.fits")
+                f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.txt")
+            elif config['imaging'].get('use_binned_rss_file') and config.get('binning') is not None:
+                bin_line = config['binning'].get('line')
+                if not bin_line:
+                    bin_line = 'Ha'
+                target_sn = config['binning'].get('target_sn')
+                if not target_sn:
+                    target_sn = 30.
+                suffix_out = config['binning'].get('rss_output_suffix')
+                if not suffix_out:
+                    suffix_out = '_vorbin_rss.fits'
+                f_dap = os.path.join(cur_wdir, f"dap_output_binfluxes_{bin_line}_sn{target_sn}",
+                                     f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}"
+                                     f"{suffix_out.replace('.fits', '.dap.fits.gz')}")
+                f_rss = os.path.join(cur_wdir, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
+                f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
+        else:
+            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
 
         dtypes = [float]*(len(dap_results_correspondence)*6+5)
         dtypes[2] = str
@@ -1344,30 +1401,44 @@ def parse_dap_results(config, w_dir=None):
             fig_hist, axes = initialize_hist_layout()
             nregs_hist_done = 0
 
-        for cur_pointing in cur_obj['pointing']:
-            if cur_pointing['skip'].get('imaging'):
+        for cpnt_id, cur_pointing in enumerate(cur_obj['pointing']):
+            if single_rss_results and cpnt_id > 0:
+                break
+
+            if cur_pointing['skip'].get('imaging') and not single_rss_results:
                 log.warning(f"Skip DAP processing (and imaging) for object = {cur_obj['name']}, "
                             f"pointing = {cur_pointing.get('name')}")
                 continue
-            for data in tqdm(cur_pointing['data'], ascii=True, desc="MJDs done", total=len(cur_pointing['data'])):
-                if isinstance(data['exp'], int):
-                    exps = [data['exp']]
+            if single_rss_results:
+                all_the_data = [[f_dap,f_rss]]
+            else:
+                all_the_data = cur_pointing['data']
+            for data in tqdm(all_the_data, ascii=True, desc="MJDs done", total=len(all_the_data)):
+                if not single_rss_results:
+                    if isinstance(data['exp'], int):
+                        exps = [data['exp']]
+                    else:
+                        exps = data['exp']
+                    if not data.get('flux_correction'):
+                        cur_flux_corr = [1.] * len(exps)
+                    else:
+                        cur_flux_corr = data['flux_correction']
+                    if isinstance(cur_flux_corr, float) or isinstance(cur_flux_corr, int):
+                        cur_flux_corr = [cur_flux_corr]
                 else:
-                    exps = data['exp']
-
-                if not data.get('flux_correction'):
-                    cur_flux_corr = [1.] * len(exps)
-                else:
-                    cur_flux_corr = data['flux_correction']
-                if isinstance(cur_flux_corr, float) or isinstance(cur_flux_corr, int):
-                    cur_flux_corr = [cur_flux_corr]
+                    exps = [0]
+                    cur_flux_corr = [1.]
                 for exp_id, exp in enumerate(exps):
-                    cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz')
+                    if single_rss_results:
+                        cur_fname = data[0]
+                        cur_fname_spec = data[1]
+                    else:
+                        cur_fname = os.path.join(cur_wdir, cur_pointing['name'], f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz')
+                        cur_fname_spec = os.path.join(cur_wdir, cur_pointing['name'], f'lvmSFrame-{exp:08d}.fits')
                     if not os.path.exists(cur_fname):
                         log.warning(f"Can't find {cur_fname}")
                         status_out = status_out & False
                         continue
-                    cur_fname_spec = os.path.join(cur_wdir, cur_pointing['name'], f'lvmSFrame-{exp:08d}.fits')
                     with fits.open(cur_fname_spec) as rss:
                         cur_table_fibers = Table(rss['SLITMAP'].data)
                         sci = cur_table_fibers['targettype'] == 'science'
@@ -1391,14 +1462,21 @@ def parse_dap_results(config, w_dir=None):
                                                      dec=np.nanmedian(cur_table_fibers[sci]['dec']),
                                                      unit=('degree', 'degree'))
 
-                    vcorr = np.round(radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
-                                                                              location=obs_loc).to(u.km / u.s).value,1)
+                    if not single_rss_results:
+                        vcorr = np.round(radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
+                                                                                  location=obs_loc).to(u.km / u.s).value,1)
+                        id_prefix = int(exp)
+
+                    else:
+                        vcorr = 0.
+                        id_prefix = int(str(cur_table_fluxes[0]['id']).split('.')[0])
+                        #TODO: check vcorr for single RSS
 
                     cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy() #
                     cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
 
                     cur_table_summary.add_columns(
-                         [Column(np.array([f'{int(exp)}.{int(cur_fibid+1)}' for cur_fibid in sci]),
+                         [Column(np.array([f'{id_prefix}.{int(cur_fibid+1)}' for cur_fibid in sci]),
                                name='id', dtype=str),
                          Column(np.array([str(cur_flux_corr[exp_id])] * len(cur_table_summary)),
                                 name='fluxcorr', dtype=float),
@@ -1495,7 +1573,7 @@ def calc_bgr(data):
     :param data:
     :return:
     """
-    return 0#np.nanmedian(data[(data<np.nanpercentile(data, 60)) & (data>np.nanpercentile(data, 5))])
+    return np.nanmedian(data[(data<np.nanpercentile(data, 60)) & (data>np.nanpercentile(data, 5))])
 
 def process_all_rss(config, w_dir=None):
     """
@@ -2474,7 +2552,7 @@ def quickflux_single_rss(rsshdu, wrange, crange=None, selection=None, include_sk
     return flux_rss, np.sqrt(error_rss)
 
 
-def process_single_rss(config, output_dir=None, binned=False):
+def process_single_rss(config, output_dir=None, binned=False, dap=False):
     """
     Create table with fluxes from a single rss file
     :param config:
@@ -2520,6 +2598,70 @@ def process_single_rss(config, output_dir=None, binned=False):
         if not os.path.isfile(f_rss):
             log.error(f"File {f_rss} doesn't exist.")
             statuses.append(False)
+            continue
+
+        if dap:
+            if binned:
+                dap_config_file = os.path.join(output_dir, cur_obj['name'], version,
+                                               f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap_config.yaml")
+                dap_output_dir = os.path.join(output_dir, cur_obj['name'], version,
+                                              f"dap_output_binfluxes_{bin_line}_sn{target_sn}")
+            else:
+                dap_config_file = os.path.join(output_dir, cur_obj['name'], version,
+                                               f"{cur_obj.get('name')}_dap_config.yaml")
+                dap_output_dir = os.path.join(output_dir, cur_obj['name'], version,
+                                              f"dap_output")
+            label = f_rss.split('/')[-1].replace('.fits', '')
+
+            if os.path.isdir(dap_output_dir) and os.path.exists(os.path.join(dap_output_dir, f'm_{label}.output.fits')):
+                log.warning("DAP results already exist. Skipping DAP running. "
+                            "Remove the directory to rerun DAP, if necessary.")
+                statuses.append(True)
+                continue
+            if not os.path.isdir(dap_output_dir):
+                os.makedirs(dap_output_dir)
+                uid = os.stat(dap_output_dir).st_uid
+                if server_group_id is not None:
+                    os.chown(dap_output_dir, uid=uid, gid=server_group_id)
+                os.chmod(dap_output_dir, 0o775)
+            # Update the SLITMAP extension of the RSS file with ra and dec columns for DAP
+            rss = fits.open(f_rss)
+            table_fibers = Table(rss['SLITMAP'].data)
+            if ('ra' not in table_fibers.colnames) or ('dec' not in table_fibers.colnames):
+                # add additional columns to the table equal to other columns ra and dec
+                table_fibers.add_columns([Column(name='ra', data=table_fibers['fib_ra']),
+                                          Column(name='dec', data=table_fibers['fib_dec'])])
+                # save updated table to SLITMAP extension
+                rss['SLITMAP'] = fits.BinTableHDU(table_fibers, name='SLITMAP')
+                rss.writeto(f_rss, overwrite=True)
+            rss.close()
+
+            # Run DAP on a single RSS file
+            # if neeeded, prepare DAP configuration file using the template from lvmdap/_legacy/lvm-dap_v110.yaml
+            if not os.path.isfile(dap_config_file):
+                # read yaml file
+                with open(os.path.join(os.environ.get('LVM_DAP_CFG'),'lvm-dap_v110.yaml'), 'r') as stream:
+                    try:
+                        dap_config = yaml.safe_load(stream)
+                    except yaml.YAMLError as exc:
+                        log.error(exc)
+                        statuses.append(False)
+                        continue
+                # change the output directory in dap_config
+                dap_config['output_path'] = dap_output_dir
+                # save the new configuration file
+                with open(dap_config_file, 'w') as outfile:
+                    yaml.dump(dap_config, outfile, default_flow_style=False)
+
+            cdir = os.curdir
+            os.chdir(os.environ.get('LVM_DAP'))
+            try:
+                os.system(f"lvm-dap-conf {f_rss} {label} {dap_config_file}")
+                statuses.append(True)
+            except Exception as e:
+                log.error(f"Something wrong with running DAP: {e}")
+                statuses.append(False)
+            os.chdir(cdir)
             continue
 
         if cur_obj['name'] == 'Orion':
@@ -2758,6 +2900,10 @@ def vorbin_rss(config, w_dir=None):
         target_sn = 30.
     else:
         target_sn = float(target_sn)
+    if not config['binning'].get('maps_source'):
+        map_source = 'maps'
+    else:
+        map_source = config['binning'].get('maps_source')
     for cur_obj in config['object']:
         if not cur_obj.get('version'):
             version = ''
@@ -2778,11 +2924,11 @@ def vorbin_rss(config, w_dir=None):
             continue
         log.info(f"Performing voronoi binning for object {cur_obj.get('name')}. "
                  f"Target SN={target_sn} in {bin_line} line.")
-        f_binmap = os.path.join(cur_wdir, 'maps',
+        f_binmap = os.path.join(cur_wdir, map_source,
                                 f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
-        f_image = os.path.join(cur_wdir, 'maps',
+        f_image = os.path.join(cur_wdir, map_source,
                                f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_flux.fits")
-        f_err = os.path.join(cur_wdir, 'maps',
+        f_err = os.path.join(cur_wdir, map_source,
                              f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_fluxerr.fits")
         if not os.path.isfile(f_image) or not os.path.isfile(f_err):
             log.error(
@@ -2816,7 +2962,7 @@ def vorbin_rss(config, w_dir=None):
             hdu_out.writeto(f_binmap, overwrite=True)
         else:
             if not os.path.isfile(f_binmap):
-                log.error(f"Binmap in {bin_line} is not found be created in 'maps' folder for {cur_obj.get('name')}."
+                log.error(f"Binmap in {bin_line} is not found be created in '{map_source}' folder for {cur_obj.get('name')}."
                           f" If they are there already, check that pixscale is consistent "
                           f"with what is indicated in 'imaging' block. Otherwise, set 'use_binmap' to false")
                 statuses.append(False)
