@@ -3107,7 +3107,10 @@ def extract_spectra_ds9(config, w_dir=None):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
             continue
-        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+        if not config['imaging'].get('use_dap'):
+            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+        else:
+            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
         if not os.path.isfile(f_tab_summary):
             log.error(f"Table with the results of the RSS analysis doesn't exist. "
                       f"Anylise_rss step must be run before the spectra extraction. "
