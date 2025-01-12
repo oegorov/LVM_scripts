@@ -3000,6 +3000,7 @@ def vorbin_rss(config, w_dir=None):
 
         for cur_bin_id, cur_bin in enumerate(uniq_bins):
             in_reg = np.flatnonzero(tab['binnum'] == cur_bin)
+
             if correct_vel_line is not None:
                 med_vel = np.nanmedian(tab[in_reg][correct_vel_line])
                 params = zip(tab[in_reg]['sourceid'], tab[in_reg]['fluxcorr_b'],
@@ -3198,8 +3199,32 @@ def extract_spectra_ds9(config, w_dir=None):
 
             if correct_vel_line is not None:
                 med_vel = np.nanmedian(table_fluxes[in_reg][f'{correct_vel_line}_vel'])
-                params = zip(table_fluxes[in_reg]['sourceid'], table_fluxes[in_reg]['fluxcorr_b'],
-                             table_fluxes[in_reg]['fluxcorr_r'], table_fluxes[in_reg]['fluxcorr_z'],
+                if not config['imaging'].get('use_dap'):
+                    sourceid = table_fluxes[in_reg]['sourceid']
+                    fluxcorr_b = table_fluxes[in_reg]['fluxcorr_b']
+                    fluxcorr_r = table_fluxes[in_reg]['fluxcorr_r']
+                    fluxcorr_z = table_fluxes[in_reg]['fluxcorr_z']
+                else:
+                    sourceid = []
+                    for v in table_fluxes[in_reg]['id']:
+                        dap_id = str(v).split('.')
+                        exp_id = int(dap_id[0])
+                        fib_id = int(dap_id[1])
+                        pointing_id_found = False
+                        for cur_pointing in cur_obj.get('pointing'):
+                            for cur_data in cur_pointing.get('data'):
+                                if exp_id in cur_data.get('exp'):
+                                    pointing_id = cur_pointing.get('name')
+                                    pointing_id_found = True
+                                    break
+                            if pointing_id_found:
+                                break
+                        sourceid.append('_'.join([str(pointing_id), f"{exp_id:08d}", f"{fib_id:04d}"]))
+                    fluxcorr_b = table_fluxes[in_reg]['fluxcorr']
+                    fluxcorr_r = table_fluxes[in_reg]['fluxcorr']
+                    fluxcorr_z = table_fluxes[in_reg]['fluxcorr']
+                params = zip(sourceid, fluxcorr_b,
+                             fluxcorr_r, fluxcorr_z,
                              table_fluxes[in_reg]['vhel_corr'], table_fluxes[in_reg][f'{correct_vel_line}_vel']-med_vel,
                              [cur_obj.get('velocity')] * len(in_reg),
                              [config['imaging'].get('include_sky')] * len(in_reg),
@@ -3207,8 +3232,8 @@ def extract_spectra_ds9(config, w_dir=None):
                              [cur_wdir] * len(in_reg)
                              )
             else:
-                params = zip(table_fluxes[in_reg]['sourceid'], table_fluxes[in_reg]['fluxcorr_b'],
-                             table_fluxes[in_reg]['fluxcorr_r'], table_fluxes[in_reg]['fluxcorr_z'],
+                params = zip(sourceid, fluxcorr_b,
+                             fluxcorr_r, fluxcorr_z,
                              table_fluxes[in_reg]['vhel_corr'],[0]*len(in_reg), [cur_obj.get('velocity')]*len(in_reg),
                              [config['imaging'].get('include_sky')]*len(in_reg), [config['imaging'].get('partial_sky')]*len(in_reg),
                              [cur_wdir]*len(in_reg))
