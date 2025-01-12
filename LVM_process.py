@@ -3174,11 +3174,19 @@ def extract_spectra_ds9(config, w_dir=None):
         wcs_ref.wcs.ctype = ["RA---TAN", "DEC--TAN"]
         regions = Regions.read(f_ds9, format='ds9')
         hdu_out = fits.HDUList([fits.PrimaryHDU()])
-
+        log.info(f"Total number of extracted spectra is {len(regions)}.")
         fig = plt.figure(figsize=(20,20))
-        gs = GridSpec(len(regions), 1, fig, 0.1, 0.1, 0.99, 0.99, 0.1, 0.15)
+        if len(regions) > 10:
+            nregs_to_show = 10
+            log.warning(f"Only first {nregs_to_show} will be shown in the pdf file")
+        else:
+            nregs_to_show = len(regions)
+        gs = GridSpec(nregs_to_show, 1, fig, 0.1, 0.1, 0.99, 0.99, 0.1, 0.15)
         for cur_reg_id, cur_reg in enumerate(regions):
-            cur_reg_name = cur_reg.meta['text']
+            if cur_reg.meta.get('text'):
+                cur_reg_name = cur_reg.meta['text']
+            else:
+                cur_reg_name = f'{cur_reg_id+1}'
             in_reg = cur_reg.contains(radec, wcs_ref)
             if reg_mask is not None:
                 for cur_mask in reg_mask:
@@ -3190,7 +3198,6 @@ def extract_spectra_ds9(config, w_dir=None):
 
             if correct_vel_line is not None:
                 med_vel = np.nanmedian(table_fluxes[in_reg][f'{correct_vel_line}_vel'])
-                print(med_vel, np.nanstd(table_fluxes[in_reg][f'{correct_vel_line}_vel']-med_vel))
                 params = zip(table_fluxes[in_reg]['sourceid'], table_fluxes[in_reg]['fluxcorr_b'],
                              table_fluxes[in_reg]['fluxcorr_r'], table_fluxes[in_reg]['fluxcorr_z'],
                              table_fluxes[in_reg]['vhel_corr'], table_fluxes[in_reg][f'{correct_vel_line}_vel']-med_vel,
@@ -3228,11 +3235,12 @@ def extract_spectra_ds9(config, w_dir=None):
             cur_hdu.header['CTYPE1'] = 'WAV-AWAV'
             hdu_out.append(cur_hdu)
 
-            ax = fig.add_subplot(gs[cur_reg_id])
-            ax.plot(res[0, 4, :], flux[0,:])
-            ax.set_title(cur_reg_name)
-            ax.set_xlabel(r"Wavelength, $\AA$")
-            ax.set_ylabel(r"Intensity, erg/s/cm^2/arcsec^2/A")
+            if cur_reg_id < nregs_to_show:
+                ax = fig.add_subplot(gs[cur_reg_id])
+                ax.plot(res[0, 4, :], flux[0,:])
+                ax.set_title(cur_reg_name)
+                ax.set_xlabel(r"Wavelength, $\AA$")
+                ax.set_ylabel(r"Intensity, erg/s/cm^2/arcsec^2/A")
 
         hdu_out.writeto(f_out, overwrite=True)
         fig.savefig(f_out.replace(".fits", '.pdf'), dpi=300, bbox_inches='tight')
