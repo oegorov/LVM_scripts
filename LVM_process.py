@@ -3134,8 +3134,8 @@ def extract_spectra_ds9(config, w_dir=None):
             log.info(f"Region mask for {cur_obj.get('name')} is used")
 
         table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
-                                  converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
-                                              'fluxcorr_z': str, 'vhel_corr': str})
+                                  converters={'sourceid': str, 'id': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                              'fluxcorr_z': str, 'fluxcorr': str, 'vhel_corr': str})
 
         correct_vel_line = config['extraction'].get('correct_vel_line')
         if not correct_vel_line:
