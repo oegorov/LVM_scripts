@@ -208,7 +208,7 @@ def LVM_process(config_filename=None, output_dir=None):
                 return
             if config['imaging'].get('use_dap'):
                 log.info("Processing DAP results")
-                status = parse_dap_results(config, w_dir=cur_wdir, single_rss_results=True)
+                status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True)
         elif config['imaging'].get('use_binned_rss_file') and 'binning' in config:
             log.info(f"Analysing binned RSS file ({config['binning'].get('target_sn')} "
                      f"in {config['binning'].get('bin_line')} line) and measuring emission lines")
@@ -217,7 +217,7 @@ def LVM_process(config_filename=None, output_dir=None):
                 return
             if config['imaging'].get('use_dap'):
                 log.info("Processing DAP results")
-                status = parse_dap_results(config, w_dir=cur_wdir, single_rss_results=True)
+                status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True)
         elif config['imaging'].get('use_binned_rss_file'):
             log.error("'binning' block is not present. Exit.")
             return
@@ -338,8 +338,48 @@ def LVM_process(config_filename=None, output_dir=None):
             log.error("Critical errors occurred. Exit.")
             return
 
+    # === Step 9 - fit extracted, binned or single RSS spectra with DAP
+    if config['steps'].get('fit_with_dap'):
+        if 'dap_fitting' not in config:
+            log.error("No DAP fitting parameters are set. Exit.")
+            return
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
 
-    # === Step 8 - create cubes in different lines
+        if config['dap_fitting'].get('fit_mode') == 'rss':
+            log.info("Analysing a single RSS file and measuring emission lines")
+            status = process_single_rss(config, output_dir=cur_wdir, dap=True)
+            if not status:
+                return
+            log.info("Processing DAP results")
+            status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='single_rss')
+        elif config['dap_fitting'].get('fit_mode') == 'binned':
+            if 'binning' not in config:
+                log.error("No binning parameters are set. Exit.")
+                return
+            log.info(f"Analysing binned RSS file ({config['binning'].get('target_sn')} "
+                     f"in {config['binning'].get('bin_line')} line) and measuring emission lines")
+            status = process_single_rss(config, output_dir=cur_wdir, binned=True, dap=True)
+            if not status:
+                return
+            log.info("Processing DAP results")
+            status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='binned')
+        elif config['dap_fitting'].get('fit_mode') == 'extracted':
+            log.info("Fitting extracted spectra with DAP")
+            status = process_single_rss(config, w_dir=cur_wdir, extracted=True, dap=True)
+            if not status:
+                log.error("Critical errors occurred. Exit.")
+                return
+            status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='extracted')
+        else:
+            log.error("Wrong DAP fit mode. It can be either 'rss', 'binned' or 'extracted'. Exit.")
+            return
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+
+    # === Step 10 - create cubes in different lines
     if config['steps'].get('create_cube'):
         cur_wdir = output_dir
         if cur_wdir is None:
@@ -1347,7 +1387,7 @@ def initialize_hist_layout():
     return fig, axes
 
 
-def parse_dap_results(config, w_dir=None, single_rss_results=False):
+def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
     if w_dir is None or not os.path.exists(w_dir):
         log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
         return False
@@ -1363,12 +1403,14 @@ def parse_dap_results(config, w_dir=None, single_rss_results=False):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             status_out = status_out & False
             continue
-        if single_rss_results:
-            if config['imaging'].get('use_single_rss_file') and not config['imaging'].get('use_binned_rss_file'):
+        if local_dap_results:
+            if ((config['imaging'].get('use_single_rss_file') and not config['imaging'].get('use_binned_rss_file'))
+                    or mode == 'single_rss'):
                 f_dap = os.path.join(cur_wdir, 'dap_output', f"{cur_obj.get('name')}_all_RSS.dap.fits.gz")
                 f_rss = os.path.join(cur_wdir, f"{cur_obj['name']}_all_RSS.fits")
                 f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.txt")
-            elif config['imaging'].get('use_binned_rss_file') and config.get('binning') is not None:
+            elif ((config['imaging'].get('use_binned_rss_file') or (mode == 'binned'))
+                  and config.get('binning') is not None):
                 bin_line = config['binning'].get('line')
                 if not bin_line:
                     bin_line = 'Ha'
@@ -1383,6 +1425,18 @@ def parse_dap_results(config, w_dir=None, single_rss_results=False):
                                      f"{suffix_out.replace('.fits', '.dap.fits.gz')}")
                 f_rss = os.path.join(cur_wdir, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
                 f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
+
+            elif mode == 'extracted':
+                suffix_out = config['extraction'].get('file_output_suffix')
+                if not suffix_out:
+                    suffix_out = '_extracted.fits'
+                f_dap = os.path.join(cur_wdir, f"dap_output_extracted",
+                                     f"{cur_obj.get('name')}"
+                                     f"{suffix_out.replace('.fits', '.dap.fits.gz')}")
+                f_rss = os.path.join(cur_wdir, f"{cur_obj.get('name')}{suffix_out}")
+                f_tab_summary = os.path.join(cur_wdir,
+                                             f"{cur_obj.get('name')}_extracted_dap.txt")
+
         else:
             f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
 
@@ -1402,19 +1456,19 @@ def parse_dap_results(config, w_dir=None, single_rss_results=False):
             nregs_hist_done = 0
 
         for cpnt_id, cur_pointing in enumerate(cur_obj['pointing']):
-            if single_rss_results and cpnt_id > 0:
+            if local_dap_results and cpnt_id > 0:
                 break
 
-            if cur_pointing['skip'].get('imaging') and not single_rss_results:
+            if cur_pointing['skip'].get('imaging') and not local_dap_results:
                 log.warning(f"Skip DAP processing (and imaging) for object = {cur_obj['name']}, "
                             f"pointing = {cur_pointing.get('name')}")
                 continue
-            if single_rss_results:
+            if local_dap_results:
                 all_the_data = [[f_dap,f_rss]]
             else:
                 all_the_data = cur_pointing['data']
             for data in tqdm(all_the_data, ascii=True, desc="MJDs done", total=len(all_the_data)):
-                if not single_rss_results:
+                if not local_dap_results:
                     if isinstance(data['exp'], int):
                         exps = [data['exp']]
                     else:
@@ -1429,7 +1483,7 @@ def parse_dap_results(config, w_dir=None, single_rss_results=False):
                     exps = [0]
                     cur_flux_corr = [1.]
                 for exp_id, exp in enumerate(exps):
-                    if single_rss_results:
+                    if local_dap_results:
                         cur_fname = data[0]
                         cur_fname_spec = data[1]
                     else:
@@ -1462,7 +1516,7 @@ def parse_dap_results(config, w_dir=None, single_rss_results=False):
                                                      dec=np.nanmedian(cur_table_fibers[sci]['dec']),
                                                      unit=('degree', 'degree'))
 
-                    if not single_rss_results:
+                    if not local_dap_results:
                         vcorr = np.round(radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
                                                                                   location=obs_loc).to(u.km / u.s).value,1)
                         id_prefix = int(exp)
@@ -2552,7 +2606,56 @@ def quickflux_single_rss(rsshdu, wrange, crange=None, selection=None, include_sk
     return flux_rss, np.sqrt(error_rss)
 
 
-def process_single_rss(config, output_dir=None, binned=False, dap=False):
+def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
+    """
+    Convert the extracted spectrum to the RSS format
+    :param f_rss_in: Input file
+    :param f_rss_out: Output file
+    :param ds9_file: Regions in ds9 format
+    :return: Status (True or False)
+    """
+    if not os.path.isfile(f_rss_in):
+        log.error(f"File {f_rss_in} doesn't exist.")
+        return False
+
+    log.info('...Start converting extracted spectrum to RSS file')
+
+    if not os.path.isfile(ds9_file):
+        log.warning(f"File {ds9_file} is not found.")
+        ds9_regions = None
+    else:
+        ds9_regions = Regions.read(ds9_file, format='ds9')
+    with fits.open(f_rss_in) as hdu:
+        n_regs = len(hdu)-1
+        nx = hdu[1].data.shape[1]
+
+
+    rss_out = fits.HDUList([fits.PrimaryHDU(data=None),
+                            fits.ImageHDU(data=np.zeros(shape=(n_regs, nx), dtype=float), name='FLUX'),
+                            fits.ImageHDU(data=np.zeros(shape=(n_regs, nx), dtype=float), name='IVAR')])
+    rss_out.writeto(f_rss_out, overwrite=True)
+    rss_out.close()
+    for kw_block in [('MASK', 'WAVE', 'LSF'), ('SKY', 'SKY_IVAR')]:
+        rss_out = fits.open(f_rss_out)
+        for kw in kw_block:
+            if kw != 'WAVE':
+                shape = (n_regs, nx)
+            else:
+                shape = nx
+            rss_out.append(fits.ImageHDU(data=np.zeros(shape=shape, dtype=float), name=kw))
+        if kw == 'SKY_IVAR':
+            rss_out.append(fits.BinTableHDU(data=tab_summary, name='SLITMAP'))
+        rss_out.writeto(f_rss_out, overwrite=True)
+        rss_out.close()
+
+    # for ind in range(n_ext):
+    #     rss[ind, :] = hdu[ind+1].data[0,:]
+    #     rss_ivar[ind, :] = 1/hdu[ind+1].data[1,:] ** 2
+    #     rss_sky[ind, :] = hdu[ind+1].data[2,:]
+    #     rss_sky_ivar[ind, :] = 1/hdu[ind+1].data[3,:] ** 2
+    # mask = np.zeros(shape=(n_ext, nx), dtype=float)
+
+def process_single_rss(config, output_dir=None, binned=False, dap=False, extracted=False):
     """
     Create table with fluxes from a single rss file
     :param config:
@@ -2575,10 +2678,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False):
         else:
             version = cur_obj.get('version')
         status_out = True
-        if not binned:
-            f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj['name']}_all_RSS.fits")
-            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj['name']}_fluxes_singleRSS.txt")
-        else:
+        if binned:
             suffix_out = config['binning'].get('rss_output_suffix')
             if not suffix_out:
                 suffix_out = '_vorbin_rss.fits'
@@ -2595,6 +2695,31 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False):
                 target_sn = float(target_sn)
             f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
             f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
+        elif extracted:
+            if 'extraction' not in config:
+                suffix_out = '_extracted.fits'
+                ds9_file = None
+            else:
+                suffix_out = config['extraction'].get('file_output_suffix')
+                ds9_suffix = config['extraction'].get('file_ds9_suffix')
+                if not suffix_out:
+                    suffix_out = '_extracted.fits'
+                if not ds9_suffix:
+                    ds9_suffix = '_ds9.reg'
+                ds9_file = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}{ds9_suffix}")
+            f_rss_in = os.path.join(output_dir, cur_obj['name'], version,
+                                 f"{cur_obj.get('name')}{suffix_out}")
+            f_rss = os.path.join(output_dir, cur_obj['name'], version,
+                                 f"{cur_obj.get('name')}{suffix_out.replace('.fits', '_rss.fits')}")
+            status = convert_extracted_spec_format(f_rss_in, f_rss, ds9_file)
+            if not status:
+                log.error("Something went wrong with converting the extracted spectrum to the RSS format. Exit")
+                return False
+            f_tab = os.path.join(output_dir, cur_obj['name'], version,
+                                 f"{cur_obj.get('name')}_extracted.txt")
+        else:
+            f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj['name']}_all_RSS.fits")
+            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj['name']}_fluxes_singleRSS.txt")
         if not os.path.isfile(f_rss):
             log.error(f"File {f_rss} doesn't exist.")
             statuses.append(False)
@@ -2606,6 +2731,12 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False):
                                                f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap_config.yaml")
                 dap_output_dir = os.path.join(output_dir, cur_obj['name'], version,
                                               f"dap_output_binfluxes_{bin_line}_sn{target_sn}")
+            elif extracted:
+                dap_config_file = os.path.join(output_dir, cur_obj['name'], version,
+                                               f"{cur_obj.get('name')}_extracted_dap_config.yaml")
+                dap_output_dir = os.path.join(output_dir, cur_obj['name'], version,
+                                              f"dap_output_extracted")
+
             else:
                 dap_config_file = os.path.join(output_dir, cur_obj['name'], version,
                                                f"{cur_obj.get('name')}_dap_config.yaml")
@@ -3253,7 +3384,9 @@ def extract_spectra_ds9(config, w_dir=None):
             error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 1, :]**2, axis=0))/np.pi/(fiber_d**2/4))
             sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0)/np.pi/(fiber_d**2/4))
             sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0))/np.pi/(fiber_d**2/4))
-            cur_hdu = fits.ImageHDU(data = np.vstack([flux,error,sky,sky_error], dtype=np.float32), name=cur_reg_name)
+            cur_lsf = np.atleast_2d(np.nanmean(res[:, 5, :], axis=0))
+            cur_hdu = fits.ImageHDU(data = np.vstack([flux,error,sky,sky_error, cur_lsf], dtype=np.float32),
+                                    name=cur_reg_name)
             cur_hdu.header['CRVAL1'] = res[0,4,0]
             cur_hdu.header['CRPIX1'] = 1
             cur_hdu.header['CDELT1'] = res[0,4,1]-res[0,4,0]
