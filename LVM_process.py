@@ -857,6 +857,9 @@ def parse_config(config_filename):
         if kw not in config['imaging']:
             config['imaging'][kw] = False
 
+    if 'dap_config_template' not in config:
+        config['dap_config_template'] = 'lvm-dap_v110.yaml'
+
     for cur_obj in config['object']:
         for cur_pointing in cur_obj['pointing']:
             if 'skip' not in cur_pointing:
@@ -2935,7 +2938,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             # if neeeded, prepare DAP configuration file using the template from lvmdap/_legacy/lvm-dap_v110.yaml
             if not os.path.isfile(dap_config_file):
                 # read yaml file
-                with open(os.path.join(os.environ.get('LVM_DAP_CFG'),'lvm-dap_v110.yaml'), 'r') as stream:
+                with open(os.path.join(os.environ.get('LVM_DAP_CFG'), config.get('dap_config_template')), 'r') as stream:
                     try:
                         dap_config = yaml.safe_load(stream)
                     except yaml.YAMLError as exc:
@@ -2944,6 +2947,11 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                         continue
                 # change the output directory in dap_config
                 dap_config['output_path'] = dap_output_dir
+                dap_config['lvmdap_dir'] = os.environ.get('LVM_DAP')
+                for kw in ['rsp-file', 'rsp-nl-file']:
+                    dap_config[kw] = os.path.join(os.environ.get('LVM_DAP_RSP'),
+                                                          dap_config[kw].split('/')[-1])
+
                 # save the new configuration file
                 with open(dap_config_file, 'w') as outfile:
                     yaml.dump(dap_config, outfile, default_flow_style=False)
