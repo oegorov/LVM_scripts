@@ -2908,7 +2908,8 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 except PermissionError:
                     log.error(f"Cannot change permissions of the directory {dap_output_dir}")
 
-            # Update the SLITMAP extension of the RSS file with ra and dec columns for DAP
+            # Update the SLITMAP extension of the RSS file with ra and dec columns for DAP,
+            # and check and add fake POSCIRA and POSCIDE, if absent
             rss = fits.open(f_rss)
             table_fibers = Table(rss['SLITMAP'].data)
             if ('ra' not in table_fibers.colnames) or ('dec' not in table_fibers.colnames):
@@ -2917,6 +2918,10 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                                           Column(name='dec', data=table_fibers['fib_dec'])])
                 # save updated table to SLITMAP extension
                 rss['SLITMAP'] = fits.BinTableHDU(table_fibers, name='SLITMAP')
+                rss.writeto(f_rss, overwrite=True)
+            if ('POSCIRA' not in rss[0].header) or ('POSCIDE' not in rss[0].header):
+                rss[0].header['POSCIRA'] = np.mean(table_fibers['fib_ra'])
+                rss[0].header['POSCIDE'] = np.mean(table_fibers['fib_dec'])
                 rss.writeto(f_rss, overwrite=True)
             rss.close()
 
