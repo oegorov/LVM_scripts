@@ -2909,19 +2909,25 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                     log.error(f"Cannot change permissions of the directory {dap_output_dir}")
 
             # Update the SLITMAP extension of the RSS file with ra and dec columns for DAP,
-            # and check and add fake POSCIRA and POSCIDE, if absent
+            # and check and add fake POSCIRA, POSCIDE and fiducial EXPOSURE=900, if absent
             rss = fits.open(f_rss)
             table_fibers = Table(rss['SLITMAP'].data)
+            commit_change = False
             if ('ra' not in table_fibers.colnames) or ('dec' not in table_fibers.colnames):
                 # add additional columns to the table equal to other columns ra and dec
                 table_fibers.add_columns([Column(name='ra', data=table_fibers['fib_ra']),
                                           Column(name='dec', data=table_fibers['fib_dec'])])
                 # save updated table to SLITMAP extension
                 rss['SLITMAP'] = fits.BinTableHDU(table_fibers, name='SLITMAP')
-                rss.writeto(f_rss, overwrite=True)
+                commit_change = True
             if ('POSCIRA' not in rss[0].header) or ('POSCIDE' not in rss[0].header):
                 rss[0].header['POSCIRA'] = np.mean(table_fibers['fib_ra'])
                 rss[0].header['POSCIDE'] = np.mean(table_fibers['fib_dec'])
+                commit_change = True
+            if ('EXPOSURE' not in rss[0].header):
+                rss[0].header['EXPOSURE'] = 900
+                commit_change = True
+            if commit_change:
                 rss.writeto(f_rss, overwrite=True)
             rss.close()
 
