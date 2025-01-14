@@ -2637,7 +2637,7 @@ def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
     else:
         ds9_regions = Regions.read(ds9_file, format='ds9')
         if len(ds9_regions) != n_regs:
-            log.warning(f"Number of regions in the file {ds9_file} doesn't match the number of regions in the RSS file. "
+            log.warning(f"Number of regions in the file {ds9_file} ({len(ds9_regions)} doesn't match the number of regions in the RSS file ({n_regs}). "
                         f"Ignoring ds9.")
             ds9_regions = None
 
