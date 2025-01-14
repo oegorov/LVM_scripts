@@ -788,6 +788,12 @@ def parse_config(config_filename):
         f"Config file is parsed. Will process {len(config['object'])} objects through the following stages: "
         f"{','.join([s for s in config['steps'] if config['steps'][s]])}")
 
+    for cur_obj in config['object']:
+        for cur_pointing in cur_obj['pointing']:
+            if 'skip' not in cur_pointing:
+                cur_pointing['skip'] = {'download': False, 'reduction': False, 'imaging': False,
+                                        'binning': False, 'combine_spec': False, 'spectra_extraction': False,}
+
     return config
 
 
@@ -3429,7 +3435,7 @@ def extract_spectra_ds9(config, w_dir=None):
             sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0)/np.pi/(fiber_d**2/4))
             sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0))/np.pi/(fiber_d**2/4))
             cur_lsf = np.atleast_2d(np.nanmean(res[:, 5, :], axis=0))
-            cur_hdu = fits.ImageHDU(data = np.vstack([flux,error,sky,sky_error, cur_lsf], dtype=np.float32),
+            cur_hdu = fits.ImageHDU(data = np.array(np.vstack([flux,error,sky,sky_error, cur_lsf]), dtype=np.float32),
                                     name=cur_reg_name)
             cur_hdu.header['CRVAL1'] = res[0,4,0]
             cur_hdu.header['CRPIX1'] = 1
