@@ -860,6 +860,11 @@ def parse_config(config_filename):
     if 'dap_config_template' not in config:
         config['dap_config_template'] = 'lvm-dap_v110.yaml'
 
+    if 'dap_fitting' not in config:
+        config['dap_fitting'] = {'override_config': True}
+    if config['dap_fitting'].get('override_config') is None:
+        config['dap_fitting']['override_config'] = True
+
     for cur_obj in config['object']:
         for cur_pointing in cur_obj['pointing']:
             if 'skip' not in cur_pointing:
@@ -2936,7 +2941,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
 
             # Run DAP on a single RSS file
             # if neeeded, prepare DAP configuration file using the template from lvmdap/_legacy/lvm-dap_v110.yaml
-            if not os.path.isfile(dap_config_file):
+            if not os.path.isfile(dap_config_file) or (config['dap_fitting'].get('override_config')):
                 # read yaml file
                 with open(os.path.join(os.environ.get('LVM_DAP_CFG'), config.get('dap_config_template')), 'r') as stream:
                     try:
