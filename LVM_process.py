@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import yaml
+from fontTools.misc.cython import returns
 from sdss_access import RsyncAccess
 
 try:
@@ -32,9 +33,6 @@ from astropy.time import Time
 from astropy.coordinates import EarthLocation
 from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_pdf import PdfPages
-from lmfit.models import GaussianModel, ConstantModel
-from regions import Regions
-from shapely.geometry import Polygon
 
 import warnings
 from astropy.utils.exceptions import AstropyWarning, AstropyUserWarning
@@ -52,17 +50,38 @@ ch.setLevel(logging.DEBUG)
 log.addHandler(ch)
 
 dap_ok = True
+regions_ok = True
 try:
     from pyFIT3D.common.auto_ssp_tools import dump_rss_output
     from pyFIT3D.common.auto_ssp_tools import load_rss
 except ModuleNotFoundError:
-    logging.error("pyFIT3D is not installed. Please install it to use DAP fitting with this script.")
+    logging.error("pyFIT3D is not installed. Please install it (pip install pyfits3d) "
+                  "to use DAP fitting with this script."
+                  "After that, make sure that you have numpy <= 1.23! Otherwise, it will not work.")
     dap_ok = False
 
 try:
     from lvmdap._cmdline.dap import auto_rsp_elines_rnd
 except ModuleNotFoundError:
-    logging.error("LVMDAP is not installed. Please install it to use DAP fitting with this script.")
+    logging.error("LVMDAP is not installed. Please install it to use DAP fitting with this script."
+                  "After that, make sure that you have numpy <= 1.23! Otherwise, it will not work.")
+
+try:
+    from shapely.geometry import Polygon
+except ModuleNotFoundError:
+    logging.error("Please install shapely (pip install shapely) to use all functionalities for spectra extraction.")
+    regions_ok = False
+
+try:
+    from regions import Regions
+except ModuleNotFoundError:
+    logging.error("Please install regions (pip install regions) to use spectra extraction.")
+    regions_ok = False
+try:
+    from lmfit.models import GaussianModel, ConstantModel
+except ModuleNotFoundError:
+    logging.error("Please install lmfit (pip install lmfit). It is necessary for running the script.")
+    sys.exit()
 
 
 # ========================
@@ -78,7 +97,7 @@ drp_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm'
 dap_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro',
                                    'analysis', dap_version)
 drp_results_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux', drp_version)
-server_group_id = 10699  # ID of the group on the server to run 'chgrp' on all new/downloaded files. Skipped if None
+server_group_id = None  # ID of the group on the server to run 'chgrp' on all new/downloaded files. Skipped if None
 obs_loc = EarthLocation.of_site('lco')  # Observatory location
 fiber_d = 35.3 #diameter of the fiber in arcsec
 
@@ -331,6 +350,9 @@ def LVM_process(config_filename=None, output_dir=None):
 
     # === Step 8 - Extract spectra in ds9 regions
     if config['steps'].get('spectra_extraction'):
+        if not regions_ok:
+            log.error("Packages 'regions' and 'shapely' must be installed to use spectra extraction. Exit")
+            return
         cur_wdir = output_dir
         if cur_wdir is None:
             cur_wdir = config.get('default_output_dir')
@@ -341,6 +363,9 @@ def LVM_process(config_filename=None, output_dir=None):
 
     # === Step 9 - fit extracted, binned or single RSS spectra with DAP
     if config['steps'].get('fit_with_dap'):
+        if not dap_ok:
+            log.error("Packages 'pyFIT3D' and 'DAP' must be installed to use DAP fitting. Exit.")
+            return
         if 'dap_fitting' not in config:
             log.error("No DAP fitting parameters are set. Exit.")
             return
@@ -787,6 +812,28 @@ def parse_config(config_filename):
     log.info(
         f"Config file is parsed. Will process {len(config['object'])} objects through the following stages: "
         f"{','.join([s for s in config['steps'] if config['steps'][s]])}")
+
+    if 'dap_version' in config:
+        global dap_version, dap_results_dir_sas
+        dap_version = config['dap_version']
+        dap_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro',
+                                           'analysis', dap_version)
+    if 'drp_version' in config:
+        global drp_version, drp_results_dir_sas
+        red_data_version = config['dap_version']
+        drp_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux',
+                                           red_data_version)
+    if 'drp_local_version' in config:
+        global drp_version, drp_results_dir
+        drp_version = config['drp_local_version']
+        drp_results_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux', drp_version)
+
+    if 'server_group_id' in config:
+        global server_group_id
+        server_group_id = config['server_group_id']
+
+    if not 'keep_existing_single_rss' in config:
+        config['keep_existing_single_rss'] = False
 
     for cur_obj in config['object']:
         for cur_pointing in cur_obj['pointing']:
@@ -2661,7 +2708,9 @@ def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
                 cur_dec = 0
             ras.append(cur_ra)
             decs.append(cur_dec)
-
+    else:
+        ras = [0] * n_regs
+        decs = [0] * n_regs
     tab_summary = Table(
         data=[np.array([f"{1:08d}_{reg_id:04d}" for reg_id in np.arange(n_regs)]),
               np.array(ras), np.array(decs), ['science'] * n_regs,
@@ -3363,6 +3412,85 @@ def extract_spectra_ds9(config, w_dir=None):
             log.warning(f"Only first {nregs_to_show} will be shown in the pdf file")
         else:
             nregs_to_show = len(regions)
+
+
+
+
+        #
+        #
+        # """ Extract coordinates in RA, DEC of the centers of each region from ds9 region file """
+        # if ds9_regions is not None:
+        #     ras = []
+        #     decs = []
+        #     for r_id, r in enumerate(ds9_regions):
+        #         try:
+        #             cur_ra = r.center.ra.degree
+        #             cur_dec = r.center.dec.degree
+        #         except AttributeError:
+        #             v_ra = r.vertices.ra.degree
+        #             v_deg = r.vertices.dec.degree
+        #             polygon = Polygon(
+        #                 [(v_ra[i], v_deg[i]) for i in range(len(v_ra))])
+        #             cur_ra, cur_dec = polygon.centroid.x, polygon.centroid.y
+        #         except:
+        #             log.warning(f"Not supported type of region for reg={r_id}")
+        #             cur_ra = 0
+        #             cur_dec = 0
+        #         ras.append(cur_ra)
+        #         decs.append(cur_dec)
+        # else:
+        #     ras = [0] * n_regs
+        #     decs = [0] * n_regs
+        # tab_summary = Table(
+        #     data=[np.array([f"{1:08d}_{reg_id:04d}" for reg_id in np.arange(n_regs)]),
+        #           np.array(ras), np.array(decs), ['science'] * n_regs,
+        #           [0] * n_regs], names=['fiberid', 'fib_ra', 'fib_dec', 'targettype', 'fibstatus'],
+        #     dtype=(int, float, float, str, int))
+        # rss_out = fits.HDUList([fits.PrimaryHDU(data=None),
+        #                         fits.ImageHDU(data=np.zeros(shape=(n_regs, nx), dtype=float), name='FLUX'),
+        #                         fits.ImageHDU(data=np.zeros(shape=(n_regs, nx), dtype=float), name='IVAR')])
+        # rss_out.writeto(f_rss_out, overwrite=True)
+        # rss_out.close()
+        # for kw_block in [('MASK', 'WAVE', 'LSF'), ('SKY', 'SKY_IVAR')]:
+        #     rss_out = fits.open(f_rss_out)
+        #     for kw in kw_block:
+        #         if kw != 'WAVE':
+        #             shape = (n_regs, nx)
+        #         else:
+        #             shape = nx
+        #         rss_out.append(fits.ImageHDU(data=np.zeros(shape=shape, dtype=float), name=kw))
+        #     if kw == 'SKY_IVAR':
+        #         rss_out.append(fits.BinTableHDU(data=tab_summary, name='SLITMAP'))
+        #     rss_out.writeto(f_rss_out, overwrite=True)
+        #     rss_out.close()
+        #
+        # rss_out = fits.open(f_rss_out)
+        # hdu_in = fits.open(f_rss_in)
+        # for ind in range(n_regs):
+        #     rss_out['FLUX'].data[ind, :] = hdu_in[ind + 1].data[0, :] * np.pi * fiber_d ** 2 / 4
+        #     rss_out['IVAR'].data[ind, :] = 1 / (hdu_in[ind + 1].data[1, :] * np.pi * fiber_d ** 2 / 4) ** 2
+        #     rss_out['SKY'].data[ind, :] = hdu_in[ind + 1].data[2, :] * np.pi * fiber_d ** 2 / 4
+        #     rss_out['SKY_IVAR'].data[ind, :] = 1 / (hdu_in[ind + 1].data[3, :] * np.pi * fiber_d ** 2 / 4) ** 2
+        #     rss_out['LSF'].data[ind, :] = hdu_in[ind + 1].data[4, :]
+        #     rss_out['MASK'].data[ind, :] = hdu_in[ind + 1].data[4, :]
+        # for kw in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR', 'LSF', 'MASK', 'WAVE']:
+        #     for kw_copy in ['CRVAL1', 'CRPIX1', 'CDELT1', 'CTYPE1']:
+        #         rss_out[kw].header[kw_copy] = hdu_in[1].header[kw_copy]
+        # wave = ((np.arange(nx) - rss_out['FLUX'].header['CRPIX1'] + 1) *
+        #         rss_out['FLUX'].header['CDELT1'] + rss_out['FLUX'].header['CRVAL1'])
+        # rss_out['WAVE'].data = wave
+        # rec = ~np.isfinite(rss_out['FLUX'].data)
+        # rss_out['MASK'].data[rec] = 1
+        # rss_out.writeto(f_rss_out, overwrite=True)
+        # rss_out.close()
+        #
+
+
+
+
+
+
+
         gs = GridSpec(nregs_to_show, 1, fig, 0.1, 0.1, 0.99, 0.99, 0.1, 0.15)
         for cur_reg_id, cur_reg in enumerate(regions):
             if cur_reg.meta.get('text'):
