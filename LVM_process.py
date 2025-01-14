@@ -3448,7 +3448,7 @@ def extract_spectra_ds9(config, w_dir=None):
 
         tab_slitmap_out = Table(
             data=[np.array(regnames), np.array([f"{1:08d}_{reg_id:04d}" for reg_id in np.arange(len(regions))]),
-                  np.array(ras), np.array(decs), ['science'] * len(regions),
+                  np.array(ras_reg), np.array(decs_reg), ['science'] * len(regions),
                   [0] * len(regions)], names=['regname', 'fiberid', 'fib_ra', 'fib_dec', 'targettype', 'fibstatus'],
             dtype=(str, int, float, float, str, int))
         rss_out = fits.HDUList([fits.PrimaryHDU(data=None),
