@@ -2813,10 +2813,6 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                     suffix_out = '_extracted.fits'
             f_rss = os.path.join(output_dir, cur_obj['name'], version,
                                  f"{cur_obj.get('name')}{suffix_out}")
-
-            if not status:
-                log.error("Something went wrong with converting the extracted spectrum to the RSS format. Exit")
-                return False
             f_tab = os.path.join(output_dir, cur_obj['name'], version,
                                  f"{cur_obj.get('name')}_extracted.txt")
         else:
