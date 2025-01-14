@@ -813,14 +813,14 @@ def parse_config(config_filename):
         f"Config file is parsed. Will process {len(config['object'])} objects through the following stages: "
         f"{','.join([s for s in config['steps'] if config['steps'][s]])}")
 
-    if 'dap_version' in config:
+    if 'dap_sas_version' in config:
         global dap_version, dap_results_dir_sas
-        dap_version = config['dap_version']
+        dap_version = config['dap_sas_version']
         dap_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro',
                                            'analysis', dap_version)
-    if 'drp_version' in config:
+    if 'drp_sas_version' in config:
         global drp_version, drp_results_dir_sas
-        red_data_version = config['dap_version']
+        red_data_version = config['dap_sas_version']
         drp_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux',
                                            red_data_version)
     if 'drp_local_version' in config:
