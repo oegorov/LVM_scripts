@@ -440,8 +440,10 @@ def create_folders_tree(config, w_dir=None):
             check_dir = os.path.join(w_dir, cur_obj.get('name'), version)
             if not os.path.exists(check_dir):
                 os.makedirs(check_dir)
-                uid = os.stat(check_dir).st_uid
-                if server_group_id is not None:
+                if ((server_group_id is not None) and
+                        ((os.stat(check_dir).st_gid != server_group_id) or
+                         (os.stat(os.path.join(w_dir, cur_obj.get('name'))).st_gid != server_group_id))):
+                    uid = os.stat(check_dir).st_uid
                     os.chown(check_dir, uid=uid, gid=server_group_id)
                     os.chown(os.path.join(w_dir, cur_obj.get('name')), uid=uid, gid=server_group_id)
                 os.chmod(check_dir, 0o775)
@@ -450,8 +452,8 @@ def create_folders_tree(config, w_dir=None):
                 check_dir = os.path.join(w_dir, cur_obj.get('name'), version, cur_pointing.get('name'))
                 if not os.path.exists(check_dir):
                     os.makedirs(check_dir)
-                    uid = os.stat(check_dir).st_uid
-                    if server_group_id is not None:
+                    if (server_group_id is not None) and (os.stat(check_dir).st_gid != server_group_id):
+                        uid = os.stat(check_dir).st_uid
                         os.chown(check_dir, uid=uid, gid=server_group_id)
                     os.chmod(check_dir, 0o775)
         status=True
@@ -936,8 +938,8 @@ def download_from_sas(config):
                 for check_dir in [d_agcam_root, d_agcam, d_data]:
                     if not os.path.exists(check_dir):
                         os.makedirs(check_dir)
-                        uid = os.stat(check_dir).st_uid
-                        if server_group_id is not None:
+                        if (server_group_id is not None) and (os.stat(check_dir).st_gid != server_group_id):
+                            uid = os.stat(check_dir).st_uid
                             os.chown(check_dir, uid=uid, gid=server_group_id)
                         os.chmod(check_dir, 0o775)
 
@@ -1047,8 +1049,8 @@ def download_from_sas(config):
             pass
         return False
     for f in new_files:
-        uid = os.stat(f).st_uid
-        if server_group_id is not None:
+        if (server_group_id is not None) and (os.stat(f).st_gid != server_group_id):
+            uid = os.stat(f).st_uid
             os.chown(f, uid=uid, gid=server_group_id)
         os.chmod(f, 0o664)
 
@@ -1073,8 +1075,8 @@ def download_from_sas(config):
                         curdir = os.path.join(output_dir, obj_name, version, pointing_name)
                     if not os.path.exists(curdir):
                         os.makedirs(curdir)
-                        uid = os.stat(curdir).st_uid
-                        if server_group_id is not None:
+                        if (server_group_id is not None) and (os.stat(curdir).st_gid != server_group_id):
+                            uid = os.stat(curdir).st_uid
                             os.chown(curdir, uid=uid, gid=server_group_id)
                         os.chmod(curdir, 0o775)
                     log.info(f"Copy {len(cur_dict[obj_name][pointing_name])} {copying_type[ind]} for object = {obj_name}, pointing = {pointing_name}")
@@ -1086,7 +1088,7 @@ def download_from_sas(config):
                             os.unlink(fname)
                         # os.symlink(sf, fname)
                         shutil.copy(sf, curdir)
-                        if server_group_id is not None:
+                        if (server_group_id is not None) and (os.stat(fname).st_gid != server_group_id):
                             uid = os.stat(fname).st_uid
                             os.chown(fname, uid=uid, gid=server_group_id)
                         os.chmod(fname, 0o664)
@@ -1294,8 +1296,8 @@ def copy_reduced_data(config, output_dir=None):
                 curdir = os.path.join(output_dir, cur_obj['name'], version, cur_pointing.get('name'))
             if not os.path.exists(curdir):
                 os.makedirs(curdir)
-                uid = os.stat(curdir).st_uid
-                if server_group_id is not None:
+                if (server_group_id is not None) and (os.stat(curdir).st_gid != server_group_id):
+                    uid = os.stat(curdir).st_uid
                     os.chown(curdir, uid=uid, gid=server_group_id)
                 os.chmod(curdir, 0o775)
 
@@ -2247,8 +2249,8 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
 
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-        uid = os.stat(output_dir).st_uid
-        if server_group_id is not None:
+        if (server_group_id is not None) and (os.stat(output_dir).st_gid != server_group_id):
+            uid = os.stat(output_dir).st_uid
             os.chown(output_dir, uid=uid, gid=server_group_id)
         os.chmod(output_dir, 0o775)
 
@@ -2851,8 +2853,8 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 continue
             if not os.path.isdir(dap_output_dir):
                 os.makedirs(dap_output_dir)
-                uid = os.stat(dap_output_dir).st_uid
-                if server_group_id is not None:
+                if (server_group_id is not None) and (os.stat(dap_output_dir).st_gid != server_group_id):
+                    uid = os.stat(dap_output_dir).st_uid
                     os.chown(dap_output_dir, uid=uid, gid=server_group_id)
                 os.chmod(dap_output_dir, 0o775)
             # Update the SLITMAP extension of the RSS file with ra and dec columns for DAP
