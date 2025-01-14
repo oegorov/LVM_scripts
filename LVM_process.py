@@ -3548,7 +3548,7 @@ def extract_spectra_ds9(config, w_dir=None):
 
             if cur_reg_id < nregs_to_show:
                 ax = fig.add_subplot(gs[cur_reg_id])
-                ax.plot(res[0, 4, :], flux[0,:]/np.pi/(fiber_d**2/4))
+                ax.plot(res[0, 4, :], flux/np.pi/(fiber_d**2/4))
                 ax.set_title(cur_reg_name)
                 ax.set_xlabel(r"Wavelength, $\AA$")
                 ax.set_ylabel(r"Intensity, erg/s/cm^2/arcsec^2/A")
