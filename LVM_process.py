@@ -34,6 +34,7 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.backends.backend_pdf import PdfPages
 from lmfit.models import GaussianModel, ConstantModel
 from regions import Regions
+from shapely.geometry import Polygon
 
 import warnings
 from astropy.utils.exceptions import AstropyWarning, AstropyUserWarning
@@ -2620,16 +2621,46 @@ def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
 
     log.info('...Start converting extracted spectrum to RSS file')
 
+    with fits.open(f_rss_in) as hdu:
+        n_regs = len(hdu)-1
+        nx = hdu[1].data.shape[1]
+
     if not os.path.isfile(ds9_file):
         log.warning(f"File {ds9_file} is not found.")
         ds9_regions = None
     else:
         ds9_regions = Regions.read(ds9_file, format='ds9')
-    with fits.open(f_rss_in) as hdu:
-        n_regs = len(hdu)-1
-        nx = hdu[1].data.shape[1]
+        if len(ds9_regions) != n_regs:
+            log.warning(f"Number of regions in the file {ds9_file} doesn't match the number of regions in the RSS file. "
+                        f"Ignoring ds9.")
+            ds9_regions = None
 
+    """ Extract coordinates in RA, DEC of the centers of each region from ds9 region file """
+    if ds9_regions is not None:
+        ras = []
+        decs = []
+        for r_id, r in enumerate(ds9_regions):
+            try:
+                cur_ra = r.center.ra.degree
+                cur_dec = r.center.dec.degree
+            except AttributeError:
+                v_ra = r.vertices.ra.degree
+                v_deg = r.vertices.dec.degree
+                polygon = Polygon(
+                    [(v_ra[i], v_deg[i]) for i in range(len(v_ra))])
+                cur_ra, cur_dec = polygon.centroid.x, polygon.centroid.y
+            except:
+                log.warning(f"Not supported type of region for reg={r_id}")
+                cur_ra = 0
+                cur_dec = 0
+            ras.append(cur_ra)
+            decs.append(cur_dec)
 
+    tab_summary = Table(
+        data=[np.array([f"{1:08d}_{reg_id:04d}" for reg_id in np.arange(n_regs)]),
+              np.array(ras), np.array(decs), ['science'] * n_regs,
+              [0] * n_regs], names=['fiberid', 'fib_ra', 'fib_dec', 'targettype', 'fibstatus'],
+        dtype=(int, float, float, str, int))
     rss_out = fits.HDUList([fits.PrimaryHDU(data=None),
                             fits.ImageHDU(data=np.zeros(shape=(n_regs, nx), dtype=float), name='FLUX'),
                             fits.ImageHDU(data=np.zeros(shape=(n_regs, nx), dtype=float), name='IVAR')])
@@ -2648,12 +2679,25 @@ def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
         rss_out.writeto(f_rss_out, overwrite=True)
         rss_out.close()
 
-    # for ind in range(n_ext):
-    #     rss[ind, :] = hdu[ind+1].data[0,:]
-    #     rss_ivar[ind, :] = 1/hdu[ind+1].data[1,:] ** 2
-    #     rss_sky[ind, :] = hdu[ind+1].data[2,:]
-    #     rss_sky_ivar[ind, :] = 1/hdu[ind+1].data[3,:] ** 2
-    # mask = np.zeros(shape=(n_ext, nx), dtype=float)
+    rss_out = fits.open(f_rss_out)
+    hdu_in = fits.open(f_rss_in)
+    for ind in range(n_regs):
+        rss_out['FLUX'].data[ind, :] = hdu_in[ind+1].data[0,:] * np.pi *fiber_d **2 / 4
+        rss_out['IVAR'].data[ind, :] = 1/(hdu_in[ind+1].data[1,:] * np.pi *fiber_d **2 / 4) ** 2
+        rss_out['SKY'].data[ind, :] = hdu_in[ind+1].data[2,:] * np.pi *fiber_d **2 / 4
+        rss_out['SKY_IVAR'].data[ind, :] = 1/(hdu_in[ind+1].data[3,:] * np.pi *fiber_d **2 / 4) ** 2
+        rss_out['LSF'].data[ind, :] = hdu_in[ind+1].data[4,:]
+        rss_out['MASK'].data[ind, :] = hdu_in[ind + 1].data[4, :]
+    for kw in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR', 'LSF', 'MASK', 'WAVE']:
+        for kw_copy in ['CRVAL1', 'CRPIX1', 'CDELT1', 'CTYPE1']:
+            rss_out[kw].header[kw_copy] = hdu_in[1].header[kw_copy]
+    wave = ((np.arange(nx) - rss_out['FLUX'].header['CRPIX1'] + 1) *
+            rss_out['FLUX'].header['CDELT1'] + rss_out['FLUX'].header['CRVAL1'])
+    rss_out['WAVE'].data = wave
+    rec = ~np.isfinite(rss_out['FLUX'].data)
+    rss_out['MASK'].data[rec] = 1
+    rss_out.writeto(f_rss_out, overwrite=True)
+    rss_out.close()
 
 def process_single_rss(config, output_dir=None, binned=False, dap=False, extracted=False):
     """
