@@ -368,7 +368,7 @@ def LVM_process(config_filename=None, output_dir=None):
             status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='binned')
         elif config['dap_fitting'].get('fit_mode') == 'extracted':
             log.info("Fitting extracted spectra with DAP")
-            status = process_single_rss(config, w_dir=cur_wdir, extracted=True, dap=True)
+            status = process_single_rss(config, output_dir=cur_wdir, extracted=True, dap=True)
             if not status:
                 log.error("Critical errors occurred. Exit.")
                 return
