@@ -835,6 +835,14 @@ def parse_config(config_filename):
     if not 'keep_existing_single_rss' in config:
         config['keep_existing_single_rss'] = False
 
+    for kw in ['interpolate', 'skip_bad_fibers', 'override_flux_table']:
+        if kw not in config['imaging']:
+            config['imaging'][kw] = True
+
+    for kw in ['save_hist_dap', 'include_sky', 'partial_sky']:
+        if kw not in config['imaging']:
+            config['imaging'][kw] = False
+
     for cur_obj in config['object']:
         for cur_pointing in cur_obj['pointing']:
             if 'skip' not in cur_pointing:
