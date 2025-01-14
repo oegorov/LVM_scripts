@@ -444,18 +444,30 @@ def create_folders_tree(config, w_dir=None):
                         ((os.stat(check_dir).st_gid != server_group_id) or
                          (os.stat(os.path.join(w_dir, cur_obj.get('name'))).st_gid != server_group_id))):
                     uid = os.stat(check_dir).st_uid
-                    os.chown(check_dir, uid=uid, gid=server_group_id)
-                    os.chown(os.path.join(w_dir, cur_obj.get('name')), uid=uid, gid=server_group_id)
-                os.chmod(check_dir, 0o775)
-                os.chmod(os.path.join(w_dir, cur_obj.get('name')), 0o775)
+                    try:
+                        os.chown(check_dir, uid=uid, gid=server_group_id)
+                        os.chown(os.path.join(w_dir, cur_obj.get('name')), uid=uid, gid=server_group_id)
+                    except PermissionError:
+                        pass
+                try:
+                    os.chmod(check_dir, 0o775)
+                    os.chmod(os.path.join(w_dir, cur_obj.get('name')), 0o775)
+                except PermissionError:
+                    pass
             for cur_pointing in cur_obj['pointing']:
                 check_dir = os.path.join(w_dir, cur_obj.get('name'), version, cur_pointing.get('name'))
                 if not os.path.exists(check_dir):
                     os.makedirs(check_dir)
                     if (server_group_id is not None) and (os.stat(check_dir).st_gid != server_group_id):
                         uid = os.stat(check_dir).st_uid
-                        os.chown(check_dir, uid=uid, gid=server_group_id)
-                    os.chmod(check_dir, 0o775)
+                        try:
+                            os.chown(check_dir, uid=uid, gid=server_group_id)
+                        except PermissionError:
+                            pass
+                    try:
+                        os.chmod(check_dir, 0o775)
+                    except PermissionError:
+                        pass
         status=True
     except Exception as e:
         log.error("Something wrong with creation of the work folders tree:" + str(e))
@@ -940,8 +952,14 @@ def download_from_sas(config):
                         os.makedirs(check_dir)
                         if (server_group_id is not None) and (os.stat(check_dir).st_gid != server_group_id):
                             uid = os.stat(check_dir).st_uid
-                            os.chown(check_dir, uid=uid, gid=server_group_id)
-                        os.chmod(check_dir, 0o775)
+                            try:
+                                os.chown(check_dir, uid=uid, gid=server_group_id)
+                            except PermissionError:
+                                pass
+                        try:
+                            os.chmod(check_dir, 0o775)
+                        except PermissionError:
+                            pass
 
                 for exp_ind,exp in enumerate(exps):
                     if config['download'].get('download_raw'):
@@ -1051,8 +1069,14 @@ def download_from_sas(config):
     for f in new_files:
         if (server_group_id is not None) and (os.stat(f).st_gid != server_group_id):
             uid = os.stat(f).st_uid
-            os.chown(f, uid=uid, gid=server_group_id)
-        os.chmod(f, 0o664)
+            try:
+                os.chown(f, uid=uid, gid=server_group_id)
+            except PermissionError:
+                pass
+        try:
+            os.chmod(f, 0o664)
+        except PermissionError:
+            pass
 
     if config['download'].get('download_reduced') or config['download'].get('download_dap'):
         output_dir = config.get('default_output_dir')
@@ -1077,8 +1101,14 @@ def download_from_sas(config):
                         os.makedirs(curdir)
                         if (server_group_id is not None) and (os.stat(curdir).st_gid != server_group_id):
                             uid = os.stat(curdir).st_uid
-                            os.chown(curdir, uid=uid, gid=server_group_id)
-                        os.chmod(curdir, 0o775)
+                            try:
+                                os.chown(curdir, uid=uid, gid=server_group_id)
+                            except PermissionError:
+                                pass
+                        try:
+                            os.chmod(curdir, 0o775)
+                        except PermissionError:
+                            pass
                     log.info(f"Copy {len(cur_dict[obj_name][pointing_name])} {copying_type[ind]} for object = {obj_name}, pointing = {pointing_name}")
                     for sf in cur_dict[obj_name][pointing_name]:
                         fname = os.path.join(curdir, os.path.split(sf)[-1])
@@ -1090,8 +1120,14 @@ def download_from_sas(config):
                         shutil.copy(sf, curdir)
                         if (server_group_id is not None) and (os.stat(fname).st_gid != server_group_id):
                             uid = os.stat(fname).st_uid
-                            os.chown(fname, uid=uid, gid=server_group_id)
-                        os.chmod(fname, 0o664)
+                            try:
+                                os.chown(fname, uid=uid, gid=server_group_id)
+                            except PermissionError:
+                                pass
+                        try:
+                            os.chmod(fname, 0o664)
+                        except PermissionError:
+                            pass
 
     return True
 
@@ -1298,8 +1334,14 @@ def copy_reduced_data(config, output_dir=None):
                 os.makedirs(curdir)
                 if (server_group_id is not None) and (os.stat(curdir).st_gid != server_group_id):
                     uid = os.stat(curdir).st_uid
-                    os.chown(curdir, uid=uid, gid=server_group_id)
-                os.chmod(curdir, 0o775)
+                    try:
+                        os.chown(curdir, uid=uid, gid=server_group_id)
+                    except PermissionError:
+                        pass
+                try:
+                    os.chmod(curdir, 0o775)
+                except PermissionError:
+                    pass
 
             source_files = []
             first_exps = []
@@ -2251,8 +2293,14 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         os.makedirs(output_dir)
         if (server_group_id is not None) and (os.stat(output_dir).st_gid != server_group_id):
             uid = os.stat(output_dir).st_uid
-            os.chown(output_dir, uid=uid, gid=server_group_id)
-        os.chmod(output_dir, 0o775)
+            try:
+                os.chown(output_dir, uid=uid, gid=server_group_id)
+            except PermissionError:
+                log.error(f"Cannot change group for {output_dir}")
+        try:
+            os.chmod(output_dir, 0o775)
+        except PermissionError:
+            log.error(f"Cannot change permissions for {output_dir}")
 
     table_fluxes = Table.read(file_fluxes, format='ascii.fixed_width_two_line')
 
@@ -2851,8 +2899,15 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 os.makedirs(dap_output_dir)
                 if (server_group_id is not None) and (os.stat(dap_output_dir).st_gid != server_group_id):
                     uid = os.stat(dap_output_dir).st_uid
-                    os.chown(dap_output_dir, uid=uid, gid=server_group_id)
-                os.chmod(dap_output_dir, 0o775)
+                    try:
+                        os.chown(dap_output_dir, uid=uid, gid=server_group_id)
+                    except PermissionError:
+                        log.error(f"Cannot change group of the directory {dap_output_dir}")
+                try:
+                    os.chmod(dap_output_dir, 0o775)
+                except PermissionError:
+                    log.error(f"Cannot change permissions of the directory {dap_output_dir}")
+
             # Update the SLITMAP extension of the RSS file with ra and dec columns for DAP
             rss = fits.open(f_rss)
             table_fibers = Table(rss['SLITMAP'].data)
