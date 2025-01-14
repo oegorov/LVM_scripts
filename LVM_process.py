@@ -819,8 +819,8 @@ def parse_config(config_filename):
         dap_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro',
                                            'analysis', dap_version)
     if 'drp_sas_version' in config:
-        global drp_version, drp_results_dir_sas
-        red_data_version = config['dap_sas_version']
+        global red_data_version, drp_results_dir_sas
+        red_data_version = config['drp_sas_version']
         drp_results_dir_sas = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 'spectro', 'redux',
                                            red_data_version)
     if 'drp_local_version' in config:
@@ -2805,20 +2805,13 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
         elif extracted:
             if 'extraction' not in config:
                 suffix_out = '_extracted.fits'
-                ds9_file = None
             else:
                 suffix_out = config['extraction'].get('file_output_suffix')
-                ds9_suffix = config['extraction'].get('file_ds9_suffix')
                 if not suffix_out:
                     suffix_out = '_extracted.fits'
-                if not ds9_suffix:
-                    ds9_suffix = '_ds9.reg'
-                ds9_file = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}{ds9_suffix}")
-            f_rss_in = os.path.join(output_dir, cur_obj['name'], version,
-                                 f"{cur_obj.get('name')}{suffix_out}")
             f_rss = os.path.join(output_dir, cur_obj['name'], version,
-                                 f"{cur_obj.get('name')}{suffix_out.replace('.fits', '_rss.fits')}")
-            status = convert_extracted_spec_format(f_rss_in, f_rss, ds9_file)
+                                 f"{cur_obj.get('name')}{suffix_out}")
+
             if not status:
                 log.error("Something went wrong with converting the extracted spectrum to the RSS format. Exit")
                 return False
@@ -3412,7 +3405,7 @@ def extract_spectra_ds9(config, w_dir=None):
         wcs_ref.wcs.cunit = ['deg', 'deg']
         wcs_ref.wcs.ctype = ["RA---TAN", "DEC--TAN"]
         regions = Regions.read(f_ds9, format='ds9')
-        hdu_out = fits.HDUList([fits.PrimaryHDU()])
+
         log.info(f"Total number of extracted spectra is {len(regions)}.")
         fig = plt.figure(figsize=(20,20))
         if len(regions) > 10:
@@ -3421,90 +3414,65 @@ def extract_spectra_ds9(config, w_dir=None):
         else:
             nregs_to_show = len(regions)
 
+        test_pointing = cur_obj.get('pointing')[0]
+        test_exp_id = test_pointing.get('data')[0].get('exp')[0]
+        test_pointing_name = test_pointing.get('name')
+        test_rssfile = os.path.join(cur_wdir, test_pointing_name, f'lvmSFrame-{test_exp_id:0>8}.fits')
+        with fits.open(test_rssfile) as hdu:
+            nx_spec = hdu['FLUX'].header['NAXIS1']
 
+        ras_reg = []
+        decs_reg = []
+        regnames = []
+        for r_id, r in enumerate(regions):
+            if r.meta.get('text'):
+                cur_reg_name = r.meta['text']
+            else:
+                cur_reg_name = f'{r_id+1}'
+            regnames.append(cur_reg_name)
+            try:
+                cur_ra = r.center.ra.degree
+                cur_dec = r.center.dec.degree
+            except AttributeError:
+                v_ra = r.vertices.ra.degree
+                v_deg = r.vertices.dec.degree
+                polygon = Polygon(
+                    [(v_ra[i], v_deg[i]) for i in range(len(v_ra))])
+                cur_ra, cur_dec = polygon.centroid.x, polygon.centroid.y
+            except:
+                log.warning(f"Not supported type of region for reg={r_id}")
+                cur_ra = 0
+                cur_dec = 0
+            ras_reg.append(cur_ra)
+            decs_reg.append(cur_dec)
 
+        tab_slitmap_out = Table(
+            data=[np.array(regnames), np.array([f"{1:08d}_{reg_id:04d}" for reg_id in np.arange(len(regions))]),
+                  np.array(ras), np.array(decs), ['science'] * len(regions),
+                  [0] * len(regions)], names=['regname', 'fiberid', 'fib_ra', 'fib_dec', 'targettype', 'fibstatus'],
+            dtype=(str, int, float, float, str, int))
+        rss_out = fits.HDUList([fits.PrimaryHDU(data=None),
+                                fits.ImageHDU(data=np.zeros(shape=(len(regions), nx_spec), dtype=float), name='FLUX'),
+                                fits.ImageHDU(data=np.zeros(shape=(len(regions), nx_spec), dtype=float), name='IVAR')])
+        rss_out.writeto(f_out, overwrite=True)
+        rss_out.close()
+        for kw_block in [('MASK', 'WAVE', 'LSF'), ('SKY', 'SKY_IVAR')]:
+            rss_out = fits.open(f_out)
+            for kw in kw_block:
+                if kw != 'WAVE':
+                    shape = (len(regions), nx_spec)
+                else:
+                    shape = nx_spec
+                rss_out.append(fits.ImageHDU(data=np.zeros(shape=shape, dtype=float), name=kw))
+            if kw == 'SKY_IVAR':
+                rss_out.append(fits.BinTableHDU(data=tab_slitmap_out, name='SLITMAP'))
+            rss_out.writeto(f_out, overwrite=True)
+            rss_out.close()
 
-        #
-        #
-        # """ Extract coordinates in RA, DEC of the centers of each region from ds9 region file """
-        # if ds9_regions is not None:
-        #     ras = []
-        #     decs = []
-        #     for r_id, r in enumerate(ds9_regions):
-        #         try:
-        #             cur_ra = r.center.ra.degree
-        #             cur_dec = r.center.dec.degree
-        #         except AttributeError:
-        #             v_ra = r.vertices.ra.degree
-        #             v_deg = r.vertices.dec.degree
-        #             polygon = Polygon(
-        #                 [(v_ra[i], v_deg[i]) for i in range(len(v_ra))])
-        #             cur_ra, cur_dec = polygon.centroid.x, polygon.centroid.y
-        #         except:
-        #             log.warning(f"Not supported type of region for reg={r_id}")
-        #             cur_ra = 0
-        #             cur_dec = 0
-        #         ras.append(cur_ra)
-        #         decs.append(cur_dec)
-        # else:
-        #     ras = [0] * n_regs
-        #     decs = [0] * n_regs
-        # tab_summary = Table(
-        #     data=[np.array([f"{1:08d}_{reg_id:04d}" for reg_id in np.arange(n_regs)]),
-        #           np.array(ras), np.array(decs), ['science'] * n_regs,
-        #           [0] * n_regs], names=['fiberid', 'fib_ra', 'fib_dec', 'targettype', 'fibstatus'],
-        #     dtype=(int, float, float, str, int))
-        # rss_out = fits.HDUList([fits.PrimaryHDU(data=None),
-        #                         fits.ImageHDU(data=np.zeros(shape=(n_regs, nx), dtype=float), name='FLUX'),
-        #                         fits.ImageHDU(data=np.zeros(shape=(n_regs, nx), dtype=float), name='IVAR')])
-        # rss_out.writeto(f_rss_out, overwrite=True)
-        # rss_out.close()
-        # for kw_block in [('MASK', 'WAVE', 'LSF'), ('SKY', 'SKY_IVAR')]:
-        #     rss_out = fits.open(f_rss_out)
-        #     for kw in kw_block:
-        #         if kw != 'WAVE':
-        #             shape = (n_regs, nx)
-        #         else:
-        #             shape = nx
-        #         rss_out.append(fits.ImageHDU(data=np.zeros(shape=shape, dtype=float), name=kw))
-        #     if kw == 'SKY_IVAR':
-        #         rss_out.append(fits.BinTableHDU(data=tab_summary, name='SLITMAP'))
-        #     rss_out.writeto(f_rss_out, overwrite=True)
-        #     rss_out.close()
-        #
-        # rss_out = fits.open(f_rss_out)
-        # hdu_in = fits.open(f_rss_in)
-        # for ind in range(n_regs):
-        #     rss_out['FLUX'].data[ind, :] = hdu_in[ind + 1].data[0, :] * np.pi * fiber_d ** 2 / 4
-        #     rss_out['IVAR'].data[ind, :] = 1 / (hdu_in[ind + 1].data[1, :] * np.pi * fiber_d ** 2 / 4) ** 2
-        #     rss_out['SKY'].data[ind, :] = hdu_in[ind + 1].data[2, :] * np.pi * fiber_d ** 2 / 4
-        #     rss_out['SKY_IVAR'].data[ind, :] = 1 / (hdu_in[ind + 1].data[3, :] * np.pi * fiber_d ** 2 / 4) ** 2
-        #     rss_out['LSF'].data[ind, :] = hdu_in[ind + 1].data[4, :]
-        #     rss_out['MASK'].data[ind, :] = hdu_in[ind + 1].data[4, :]
-        # for kw in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR', 'LSF', 'MASK', 'WAVE']:
-        #     for kw_copy in ['CRVAL1', 'CRPIX1', 'CDELT1', 'CTYPE1']:
-        #         rss_out[kw].header[kw_copy] = hdu_in[1].header[kw_copy]
-        # wave = ((np.arange(nx) - rss_out['FLUX'].header['CRPIX1'] + 1) *
-        #         rss_out['FLUX'].header['CDELT1'] + rss_out['FLUX'].header['CRVAL1'])
-        # rss_out['WAVE'].data = wave
-        # rec = ~np.isfinite(rss_out['FLUX'].data)
-        # rss_out['MASK'].data[rec] = 1
-        # rss_out.writeto(f_rss_out, overwrite=True)
-        # rss_out.close()
-        #
-
-
-
-
-
-
-
+        rss_out = fits.open(f_out)
         gs = GridSpec(nregs_to_show, 1, fig, 0.1, 0.1, 0.99, 0.99, 0.1, 0.15)
         for cur_reg_id, cur_reg in enumerate(regions):
-            if cur_reg.meta.get('text'):
-                cur_reg_name = cur_reg.meta['text']
-            else:
-                cur_reg_name = f'{cur_reg_id+1}'
+            cur_reg_name = regnames[cur_reg_id]
             in_reg = cur_reg.contains(radec, wcs_ref)
             if reg_mask is not None:
                 for cur_mask in reg_mask:
@@ -3566,27 +3534,36 @@ def extract_spectra_ds9(config, w_dir=None):
                 gc.collect()
             res = np.array(res)
 
-            flux = np.atleast_2d(np.nanmean(res[:,0,:], axis=0)/np.pi/(fiber_d**2/4))
-            error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 1, :]**2, axis=0))/np.pi/(fiber_d**2/4))
-            sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0)/np.pi/(fiber_d**2/4))
-            sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0))/np.pi/(fiber_d**2/4))
-            cur_lsf = np.atleast_2d(np.nanmean(res[:, 5, :], axis=0))
-            cur_hdu = fits.ImageHDU(data = np.array(np.vstack([flux,error,sky,sky_error, cur_lsf]), dtype=np.float32),
-                                    name=cur_reg_name)
-            cur_hdu.header['CRVAL1'] = res[0,4,0]
-            cur_hdu.header['CRPIX1'] = 1
-            cur_hdu.header['CDELT1'] = res[0,4,1]-res[0,4,0]
-            cur_hdu.header['CTYPE1'] = 'WAV-AWAV'
-            hdu_out.append(cur_hdu)
+            flux = np.nanmean(res[:,0,:], axis=0)#/np.pi/(fiber_d**2/4))
+            error = np.sqrt(np.nanmean(res[:, 1, :]**2, axis=0))#/np.pi/(fiber_d**2/4))
+            sky = np.nanmean(res[:, 2, :], axis=0)#/np.pi/(fiber_d**2/4))
+            sky_error = np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0))#/np.pi/(fiber_d**2/4))
+            cur_lsf = np.nanmean(res[:, 5, :], axis=0)
+
+            rss_out['FLUX'].data[cur_reg_id, :] = np.float32(flux)
+            rss_out['IVAR'].data[cur_reg_id, :] = np.float32(1/(error**2))
+            rss_out['SKY'].data[cur_reg_id, :] = np.float32(sky)
+            rss_out['SKY_IVAR'].data[cur_reg_id, :] = np.float32(1/(sky_error**2))
+            rss_out['LSF'].data[cur_reg_id, :] = np.float32(cur_lsf)
 
             if cur_reg_id < nregs_to_show:
                 ax = fig.add_subplot(gs[cur_reg_id])
-                ax.plot(res[0, 4, :], flux[0,:])
+                ax.plot(res[0, 4, :], flux[0,:]/np.pi/(fiber_d**2/4))
                 ax.set_title(cur_reg_name)
                 ax.set_xlabel(r"Wavelength, $\AA$")
                 ax.set_ylabel(r"Intensity, erg/s/cm^2/arcsec^2/A")
 
-        hdu_out.writeto(f_out, overwrite=True)
+        for kw in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR', 'LSF', 'MASK', 'WAVE']:
+            rss_out[kw].header['CRVAL1'] = res[0,4,0]
+            rss_out[kw].header['CRPIX1'] = 1
+            rss_out[kw].header['CDELT1'] = res[0,4,1]-res[0,4,0]
+            rss_out[kw].header['CTYPE1'] = 'WAV-AWAV'
+
+        rss_out['WAVE'].data = res[0, 4, :]
+        rec = ~np.isfinite(rss_out['FLUX'].data)
+        rss_out['MASK'].data[rec] = 1
+
+        rss_out.writeto(f_out, overwrite=True)
         fig.savefig(f_out.replace(".fits", '.pdf'), dpi=300, bbox_inches='tight')
         statuses.append(True)
 
