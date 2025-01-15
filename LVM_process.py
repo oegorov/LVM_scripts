@@ -1549,6 +1549,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                 target_sn = config['binning'].get('target_sn')
                 if not target_sn:
                     target_sn = 30.
+                target_sn = float(target_sn)
                 suffix_out = config['binning'].get('rss_output_suffix')
                 if not suffix_out:
                     suffix_out = '_vorbin_rss.fits'
@@ -1699,7 +1700,9 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
 
                         else:
+                            print(cur_table_fluxes['wl'])
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
+                            print(len(cur_table_fluxes), len(cur_table_fluxes[rec_cur_line]))
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
                             if kw == 'OI':
