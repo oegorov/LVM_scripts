@@ -1659,7 +1659,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         id_prefix = int(str(cur_table_fluxes[0]['id']).split('.')[0])
                         #TODO: check vcorr for single RSS
 
-                    cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy() #
+                    cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy()[:1000] #
                     cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
 
                     cur_table_summary.add_columns(
@@ -1701,8 +1701,6 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
                         else:
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
-                            print(np.array(cur_table_summary).shape, np.array(cur_table_fluxes[rec_cur_line]).shape)
-                            print(cur_table_fluxes.colnames, cur_table_summary.colnames)
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
                             if kw == 'OI':
