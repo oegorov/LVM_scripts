@@ -1639,18 +1639,20 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         cur_table_fluxes_faint_b = Table(rss['NP_ELINES_B'].data)
                         cur_table_fluxes_faint_r = Table(rss['NP_ELINES_R'].data)
                         cur_table_fluxes_faint_i = Table(rss['NP_ELINES_I'].data)
-                        for row_id in range(len(cur_table_fluxes_faint_i)):
-                            v = cur_table_fluxes_faint_i[row_id]['id']
-                            cur_table_fluxes_faint_i[row_id]['id'] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
-                        for row_id in range(len(cur_table_fluxes_faint_r)):
-                            v = cur_table_fluxes_faint_r[row_id]['id']
-                            cur_table_fluxes_faint_r[row_id]['id'] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
-                        for row_id in range(len(cur_table_fluxes_faint_b)):
-                            v = cur_table_fluxes_faint_b[row_id]['id']
-                            cur_table_fluxes_faint_b[row_id]['id'] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
-                        for row_id in range(len(cur_table_fluxes)):
-                            v = cur_table_fluxes[row_id]['id']
-                            cur_table_fluxes[row_id]['id'] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
+
+                        # These lines were needed to fix the issue with the fiber IDs in DAP results
+                        # for row_id in range(len(cur_table_fluxes_faint_i)):
+                        #     v = cur_table_fluxes_faint_i[row_id]['id']
+                        #     cur_table_fluxes_faint_i[row_id]['id'] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
+                        # for row_id in range(len(cur_table_fluxes_faint_r)):
+                        #     v = cur_table_fluxes_faint_r[row_id]['id']
+                        #     cur_table_fluxes_faint_r[row_id]['id'] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
+                        # for row_id in range(len(cur_table_fluxes_faint_b)):
+                        #     v = cur_table_fluxes_faint_b[row_id]['id']
+                        #     cur_table_fluxes_faint_b[row_id]['id'] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
+                        # for row_id in range(len(cur_table_fluxes)):
+                        #     v = cur_table_fluxes[row_id]['id']
+                        #     cur_table_fluxes[row_id]['id'] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
 
                     if not local_dap_results:
                         cur_obstime = Time(rss[0].header['OBSTIME'])
@@ -1713,7 +1715,6 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
                         else:
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
-                            # print(np.unique(cur_table_summary['id']), np.unique(cur_table_fluxes[rec_cur_line]['id']))
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
                             if kw == 'OI':
@@ -2879,9 +2880,6 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             suffix_out = config['binning'].get('rss_output_suffix')
             if not suffix_out:
                 suffix_out = '_vorbin_rss.fits'
-            suffix_binmap = config['binning'].get('binmap_suffix')
-            if not suffix_binmap:
-                suffix_binmap = '_binmap.fits'
             bin_line = config['binning'].get('line')
             if not bin_line:
                 bin_line = 'Ha'
@@ -2965,7 +2963,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 rss[0].header['POSCIDE'] = np.mean(table_fibers['fib_dec'])
                 commit_change = True
             if ('EXPOSURE' not in rss[0].header):
-                rss[0].header['EXPOSURE'] = 900
+                rss[0].header['EXPOSURE'] = 1
                 commit_change = True
 
             if ('MASK' not in rss):
@@ -3013,6 +3011,21 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 log.error(f"Something wrong with running DAP: {e}")
                 statuses.append(False)
             os.chdir(cdir)
+
+            """ Fix permissions for the DAP output files """
+            new_files = glob.glob(os.path.join(dap_output_dir, '*'))
+            for f in new_files:
+                if (server_group_id is not None) and (os.stat(f).st_gid != server_group_id):
+                    uid = os.stat(f).st_uid
+                    try:
+                        os.chown(f, uid=uid, gid=server_group_id)
+                    except PermissionError:
+                        log.error(f"Cannot change group of the DAP output file {f}")
+                try:
+                    os.chmod(f, 0o775)
+                except PermissionError:
+                    log.error(f"Cannot change permissions for the DAP output file {f}")
+
             continue
 
         if cur_obj['name'] == 'Orion':
