@@ -305,14 +305,18 @@ def LVM_process(config_filename=None, output_dir=None):
                 suffix_binmap = config['binning'].get('binmap_suffix')
                 if not suffix_binmap:
                     suffix_binmap = '_binmap.fits'
+                if config['binning'].get('maps_source'):
+                    maps_source = config['binning'].get('maps_source')
+                else:
+                    maps_source = 'maps'
+                f_binmap = os.path.join(cur_wdir, maps_source,
+                                        f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
                 if config['imaging'].get('use_dap'):
                     file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS_dap')
                 else:
                     file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS')
-                f_binmap = os.path.join(cur_wdir, 'maps',
-                                        f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
                 line_list = config['imaging'].get('lines')
                 if (not os.path.isfile(file_fluxes)) or (not os.path.isfile(f_binmap)):
                     log.error("Either table with fluxes (from binned RSS) or binmap do not exist. Exit.")
@@ -396,7 +400,7 @@ def LVM_process(config_filename=None, output_dir=None):
             if 'binning' not in config:
                 log.error("No binning parameters are set. Exit.")
                 return
-            log.info(f"Analysing binned RSS file ({config['binning'].get('target_sn')} "
+            log.info(f"Analysing binned RSS file (at S/N={config['binning'].get('target_sn')} "
                      f"in {config['binning'].get('bin_line')} line) and measuring emission lines")
             if not config['dap_fitting'].get('skip_running_dap'):
                 status = process_single_rss(config, output_dir=cur_wdir, binned=True, dap=True)
@@ -1765,6 +1769,9 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
             pdf.savefig(fig_hist)
             plt.close()
             pdf.close()
+        if config['imaging'].get('use_binned_rss_file') or (mode == 'binned'):
+            tab_summary.add_column(Column(np.array([int(str(v).split('.')[1]) for v in tab_summary['id']]),
+                                          name='binnum'))
         tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
     return status_out
 
@@ -2477,8 +2484,16 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         img_arr[:] = np.nan
         err_arr[:] = np.nan
         xxbin, yybin = np.meshgrid(np.arange(binmap.shape[1]), np.arange(binmap.shape[0]))
-        for bin_ind, bin in enumerate(table_fluxes['binnum']):
-            rec = np.flatnonzero(binmap.ravel() == bin)
+        if 'binnum' not in table_fluxes.colnames:
+            binnum_colname = 'id' # in case if the results are produced by DAP
+            dap_processed = True
+        else:
+            binnum_colname = 'binnum'
+            dap_processed = False
+        for bin_ind, cur_bin in enumerate(table_fluxes[binnum_colname]):
+            if dap_processed:
+                cur_bin = int(str(cur_bin).split('.')[1])
+            rec = np.flatnonzero(binmap.ravel() == cur_bin)
             img_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values[bin_ind, :])[None, None, :]
             err_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values_errs[bin_ind, :])[None, None, :]
 
@@ -3326,7 +3341,7 @@ def vorbin_rss(config, w_dir=None):
             hdu_out.writeto(f_binmap, overwrite=True)
         else:
             if not os.path.isfile(f_binmap):
-                log.error(f"Binmap in {bin_line} is not found be created in '{map_source}' folder for {cur_obj.get('name')}."
+                log.error(f"Binmap in {bin_line} is not found in '{map_source}' folder for {cur_obj.get('name')}."
                           f" If they are there already, check that pixscale is consistent "
                           f"with what is indicated in 'imaging' block. Otherwise, set 'use_binmap' to false")
                 statuses.append(False)
