@@ -1702,9 +1702,9 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
                         else:
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
+                            print(np.unique(cur_table_summary['id']), np.unique(cur_table_fluxes[rec_cur_line]['id']))
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
-                            print(len(rec_cur_line), len(cur_table_summary), len(cur_table_fluxes))
                             if kw == 'OI':
                                 cur_table_summary['flux'] -= np.nanmedian(cur_table_summary['flux'])
                             cur_table_summary['flux'] *= cur_flux_corr[exp_id]
