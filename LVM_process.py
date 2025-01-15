@@ -1670,6 +1670,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                          Column(np.array([str(vcorr)] * len(cur_table_summary)), name='vhel_corr',
                                 dtype=float)]
                          )
+                    print(len(sci), len(cur_table_summary), cur_table_fluxes.colnames)
                     for kw in dap_results_correspondence.keys():
                         if isinstance(dap_results_correspondence[kw], str):
                             curline_wl = float(dap_results_correspondence[kw].split('_')[-1])
