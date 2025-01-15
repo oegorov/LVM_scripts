@@ -1680,7 +1680,6 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                 cur_table_fluxes_faint = cur_table_fluxes_faint_r
                             else:
                                 cur_table_fluxes_faint = cur_table_fluxes_faint_b
-                            print('all good')
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes_faint['id',
                                 "flux_" + dap_results_correspondence[kw], "e_flux_"+dap_results_correspondence[kw],
                                 "vel_" + dap_results_correspondence[kw], "e_vel_"+dap_results_correspondence[kw],
@@ -1700,11 +1699,10 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                               "e_disp_"+dap_results_correspondence[kw]],
                                                              [kw + "_flux", kw + "_fluxerr", kw + "_vel",
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
-                            print('still good')
                         else:
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
                             print(np.array(cur_table_summary).shape, np.array(cur_table_fluxes[rec_cur_line]).shape)
-                            print('Now bad')
+                            print(cur_table_fluxes.colnames, cur_table_summary.colnames)
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
                             if kw == 'OI':
