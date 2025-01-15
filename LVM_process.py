@@ -1659,7 +1659,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         id_prefix = int(str(cur_table_fluxes[0]['id']).split('.')[0])
                         #TODO: check vcorr for single RSS
 
-                    cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy()[:1000] #
+                    cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy() #
                     cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
 
                     cur_table_summary.add_columns(
@@ -1670,6 +1670,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                          Column(np.array([str(vcorr)] * len(cur_table_summary)), name='vhel_corr',
                                 dtype=float)]
                          )
+                    cur_table_summary = cur_table_summary[:1000]
 
                     for kw in dap_results_correspondence.keys():
                         if isinstance(dap_results_correspondence[kw], str):
@@ -1703,7 +1704,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
-                            print(len(rec_cur_line), len(cur_table_summary), len(cur_table_fluxes))
+                            # print(len(rec_cur_line), len(cur_table_summary), len(cur_table_fluxes))
                             if kw == 'OI':
                                 cur_table_summary['flux'] -= np.nanmedian(cur_table_summary['flux'])
                             cur_table_summary['flux'] *= cur_flux_corr[exp_id]
