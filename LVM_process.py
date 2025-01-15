@@ -1702,7 +1702,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         else:
                             print(len(cur_table_fluxes['wl']))
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
-                            print(cur_table_fluxes.shape.info(), cur_table_fluxes[rec_cur_line].info())
+                            print(cur_table_fluxes.info(), cur_table_fluxes[rec_cur_line].info())
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
                             if kw == 'OI':
