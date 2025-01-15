@@ -1670,7 +1670,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                          Column(np.array([str(vcorr)] * len(cur_table_summary)), name='vhel_corr',
                                 dtype=float)]
                          )
-                    print(len(sci), len(cur_table_summary), cur_table_fluxes.colnames)
+
                     for kw in dap_results_correspondence.keys():
                         if isinstance(dap_results_correspondence[kw], str):
                             curline_wl = float(dap_results_correspondence[kw].split('_')[-1])
@@ -1680,6 +1680,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                 cur_table_fluxes_faint = cur_table_fluxes_faint_r
                             else:
                                 cur_table_fluxes_faint = cur_table_fluxes_faint_b
+                            print('all good')
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes_faint['id',
                                 "flux_" + dap_results_correspondence[kw], "e_flux_"+dap_results_correspondence[kw],
                                 "vel_" + dap_results_correspondence[kw], "e_vel_"+dap_results_correspondence[kw],
@@ -1699,11 +1700,11 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                               "e_disp_"+dap_results_correspondence[kw]],
                                                              [kw + "_flux", kw + "_fluxerr", kw + "_vel",
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
-
+                            print('still good')
                         else:
-                            print(len(cur_table_fluxes['wl']))
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
                             print(np.array(cur_table_summary).shape, np.array(cur_table_fluxes[rec_cur_line]).shape)
+                            print('Now bad')
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
                             if kw == 'OI':
