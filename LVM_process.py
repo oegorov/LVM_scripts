@@ -1639,6 +1639,18 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         cur_table_fluxes_faint_b = Table(rss['NP_ELINES_B'].data)
                         cur_table_fluxes_faint_r = Table(rss['NP_ELINES_R'].data)
                         cur_table_fluxes_faint_i = Table(rss['NP_ELINES_I'].data)
+                        for row_id in range(len(cur_table_fluxes_faint_i)):
+                            v = cur_table_fluxes_faint_i[row_id]['id']
+                            cur_table_fluxes_faint_i[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][:1]))
+                        for row_id in range(len(cur_table_fluxes_faint_r)):
+                            v = cur_table_fluxes_faint_r[row_id]['id']
+                            cur_table_fluxes_faint_r[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][:1]))
+                        for row_id in range(len(cur_table_fluxes_faint_b)):
+                            v = cur_table_fluxes_faint_b[row_id]['id']
+                            cur_table_fluxes_faint_b[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][:1]))
+                        for row_id in range(len(cur_table_fluxes)):
+                            v = cur_table_fluxes[row_id]['id']
+                            cur_table_fluxes[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][:1]))
 
                     if not local_dap_results:
                         cur_obstime = Time(rss[0].header['OBSTIME'])
@@ -1701,7 +1713,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
                         else:
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
-                            print(np.unique(cur_table_summary['id']), np.unique(cur_table_fluxes[rec_cur_line]['id']))
+                            # print(np.unique(cur_table_summary['id']), np.unique(cur_table_fluxes[rec_cur_line]['id']))
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
                             if kw == 'OI':
