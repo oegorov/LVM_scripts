@@ -1641,16 +1641,16 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         cur_table_fluxes_faint_i = Table(rss['NP_ELINES_I'].data)
                         for row_id in range(len(cur_table_fluxes_faint_i)):
                             v = cur_table_fluxes_faint_i[row_id]['id']
-                            cur_table_fluxes_faint_i[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][:1]))
+                            cur_table_fluxes_faint_i[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
                         for row_id in range(len(cur_table_fluxes_faint_r)):
                             v = cur_table_fluxes_faint_r[row_id]['id']
-                            cur_table_fluxes_faint_r[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][:1]))
+                            cur_table_fluxes_faint_r[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
                         for row_id in range(len(cur_table_fluxes_faint_b)):
                             v = cur_table_fluxes_faint_b[row_id]['id']
-                            cur_table_fluxes_faint_b[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][:1]))
+                            cur_table_fluxes_faint_b[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
                         for row_id in range(len(cur_table_fluxes)):
                             v = cur_table_fluxes[row_id]['id']
-                            cur_table_fluxes[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][:1]))
+                            cur_table_fluxes[row_id] = v.split('.')[0] + '.' + str(int(v.split('.')[1][1:]))
 
                     if not local_dap_results:
                         cur_obstime = Time(rss[0].header['OBSTIME'])
