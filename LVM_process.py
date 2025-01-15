@@ -223,18 +223,27 @@ def LVM_process(config_filename=None, output_dir=None):
 
         if config['imaging'].get('use_single_rss_file'):
             log.info("Analysing a single RSS file and measuring emission lines")
-            status = process_single_rss(config, output_dir=cur_wdir, dap=config['imaging'].get('use_dap'))
-            if not status:
-                return
+            if not (config['imaging'].get('use_dap') and (config.get('dap_fitting') is not None)
+                    and config['dap_fitting'].get('skip_running_dap')):
+                status = process_single_rss(config, output_dir=cur_wdir, dap=config['imaging'].get('use_dap'))
+                if not status:
+                    return
+            else:
+                log.info("Skip running DAP and go directly to the results parsing")
             if config['imaging'].get('use_dap'):
                 log.info("Processing DAP results")
                 status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True)
         elif config['imaging'].get('use_binned_rss_file') and 'binning' in config:
             log.info(f"Analysing binned RSS file ({config['binning'].get('target_sn')} "
                      f"in {config['binning'].get('bin_line')} line) and measuring emission lines")
-            status = process_single_rss(config, output_dir=cur_wdir, binned=True, dap=config['imaging'].get('use_dap'))
-            if not status:
-                return
+
+            if not (config['imaging'].get('use_dap') and (config.get('dap_fitting') is not None)
+                    and config['dap_fitting'].get('skip_running_dap')):
+                status = process_single_rss(config, output_dir=cur_wdir, binned=True, dap=config['imaging'].get('use_dap'))
+                if not status:
+                    return
+            else:
+                log.info("Skip running DAP and go directly to the results parsing")
             if config['imaging'].get('use_dap'):
                 log.info("Processing DAP results")
                 status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True)
@@ -375,9 +384,12 @@ def LVM_process(config_filename=None, output_dir=None):
 
         if config['dap_fitting'].get('fit_mode') == 'rss':
             log.info("Analysing a single RSS file and measuring emission lines")
-            status = process_single_rss(config, output_dir=cur_wdir, dap=True)
-            if not status:
-                return
+            if not config['dap_fitting'].get('skip_running_dap'):
+                status = process_single_rss(config, output_dir=cur_wdir, dap=True)
+                if not status:
+                    return
+            else:
+                log.info("Skip running DAP and go directly to the results parsing")
             log.info("Processing DAP results")
             status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='single_rss')
         elif config['dap_fitting'].get('fit_mode') == 'binned':
@@ -386,17 +398,23 @@ def LVM_process(config_filename=None, output_dir=None):
                 return
             log.info(f"Analysing binned RSS file ({config['binning'].get('target_sn')} "
                      f"in {config['binning'].get('bin_line')} line) and measuring emission lines")
-            status = process_single_rss(config, output_dir=cur_wdir, binned=True, dap=True)
-            if not status:
-                return
+            if not config['dap_fitting'].get('skip_running_dap'):
+                status = process_single_rss(config, output_dir=cur_wdir, binned=True, dap=True)
+                if not status:
+                    return
+            else:
+                log.info("Skip running DAP and go directly to the results parsing")
             log.info("Processing DAP results")
             status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='binned')
         elif config['dap_fitting'].get('fit_mode') == 'extracted':
             log.info("Fitting extracted spectra with DAP")
-            status = process_single_rss(config, output_dir=cur_wdir, extracted=True, dap=True)
-            if not status:
-                log.error("Critical errors occurred. Exit.")
-                return
+            if not config['dap_fitting'].get('skip_running_dap'):
+                status = process_single_rss(config, output_dir=cur_wdir, extracted=True, dap=True)
+                if not status:
+                    log.error("Critical errors occurred. Exit.")
+                    return
+            else:
+                log.info("Skip running DAP and go directly to the results parsing")
             status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='extracted')
         else:
             log.error("Wrong DAP fit mode. It can be either 'rss', 'binned' or 'extracted'. Exit.")
