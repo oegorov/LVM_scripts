@@ -1060,7 +1060,7 @@ def download_from_sas(config):
         return True
     log.info(f"Number of files to download from SAS: {counter}")
     log.info(
-        f"Start downloading files from SAS. It can take several minutes if you ask for many files, please be patient!")
+        f"Start downloading files from SAS. It can take long if you ask for many files, please be patient!")
     try:
         rsync.set_stream()
         rsync.stream.cli.data_dir = tmp_for_sdss_access
@@ -1620,6 +1620,8 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         cur_table_fluxes_faint_b = Table(rss['NP_ELINES_B'].data)
                         cur_table_fluxes_faint_r = Table(rss['NP_ELINES_R'].data)
                         cur_table_fluxes_faint_i = Table(rss['NP_ELINES_I'].data)
+
+                    if not local_dap_results:
                         cur_obstime = Time(rss[0].header['OBSTIME'])
                         try:
                             radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
@@ -1629,8 +1631,6 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                             radec_central = SkyCoord(ra=np.nanmedian(cur_table_fibers[sci]['ra']),
                                                      dec=np.nanmedian(cur_table_fibers[sci]['dec']),
                                                      unit=('degree', 'degree'))
-
-                    if not local_dap_results:
                         vcorr = np.round(radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
                                                                                   location=obs_loc).to(u.km / u.s).value,1)
                         id_prefix = int(exp)
@@ -2934,6 +2934,17 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 commit_change = True
             if ('EXPOSURE' not in rss[0].header):
                 rss[0].header['EXPOSURE'] = 900
+                commit_change = True
+
+            if ('MASK' not in rss):
+                mask = np.zeros_like(rss['FLUX'].data, dtype=int)
+                mask[~np.isfinite(rss['FLUX'].data) | (rss['FLUX'].data == 0)] = 1
+                rss.append(fits.ImageHDU(data=mask, header=rss[0].header, name='MASK'))
+                commit_change = True
+            if ('WAVE' not in rss):
+                wave = np.arange(rss['FLUX'].header['NAXIS1']-rss['FLUX'].header['CRPIX1']+1
+                                 )*rss['FLUX'].header['CDELT1']+rss['FLUX'].header['CRVAL1']
+                rss.append(fits.ImageHDU(data=np.float32(wave), name='WAVE'))
                 commit_change = True
             if commit_change:
                 rss.writeto(f_rss, overwrite=True)
