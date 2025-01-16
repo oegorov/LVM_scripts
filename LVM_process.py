@@ -102,13 +102,18 @@ obs_loc = EarthLocation.of_site('lco')  # Observatory location
 fiber_d = 35.3 #diameter of the fiber in arcsec
 
 dap_results_correspondence = {
-    "Ha": 6562.85, 'Hb': 4861.36, 'SII6717': 6716.44, "SII6731": 6730.82, 'NII6584': 6583.45, 'SIII9532': 9531.1,
-    'OIII5007': 5006.84,
-    "OII3727": 3726.03, "OII3729": 3728.82, "Hg": 4340.49,
-    'OI': 6300.3,
+    "Ha_p": 6562.85, 'Hb_p': 4861.36, 'SII6717_p': 6716.44, "SII6731_p": 6730.82, 'NII6584_p': 6583.45, 'SIII9532_p': 9531.1,
+    'OIII5007_p': 5006.84,
+    "OII3727_p": 3726.03, "OII3729_p": 3728.82, "Hg_p": 4340.49,
+    'OI_p': 6300.3,
+    "Ha": 'Halpha_6562.85', 'Hb': 'Hbeta_4861.36', 'SII6717': '[SII]_6716.44', "SII6731": '[SII]_6730.82',
+    'NII6584': '[NII]_6583.45', 'SIII9532': '[SIII]_9531.1',
+    'OIII5007': '[OIII]_5006.84',
+    "OII3727": '[OII]_3726.03', "OII3729": '[OII]_3728.82', "Hg": 'Hgamma_4340.49',
+    'OI': '[OI]_6300.3', 'SIII6312': '[SIII]_6312.06',
     "HeII": "HeII_4685.68",
     "OIII4363": '[OIII]_4363.21', 'NII5755': '[NII]_5754.59',
-    '[SII]4068': '[SII]_4068.6', 'NeIII3869': '[NeIII]_3868.75',
+    'SII4068': '[SII]_4068.6', 'NeIII3869': '[NeIII]_3868.75',
     'OII7320': '[OII]_7318.92', 'OII7330': '[OII]_7329.66', 'ArIII7136': '[ArIII]_7135.8'
 }
 
@@ -1718,7 +1723,6 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                          )
                     if 'binnum' in cur_table_fibers.colnames:
                         cur_table_summary.add_column(cur_table_fibers[sci]['binnum'], name='binnum')
-
                     for kw in dap_results_correspondence.keys():
                         if isinstance(dap_results_correspondence[kw], str):
                             curline_wl = float(dap_results_correspondence[kw].split('_')[-1])
