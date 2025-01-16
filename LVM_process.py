@@ -460,7 +460,8 @@ def fix_permission(f):
     if os.path.exists(f):
         if (f.endswith('.fits') or f.endswith('.txt') or f.endswith('.reg') or f.endswith('.pdf') or f.endswith('.png')
             or f.endswith('.fits.gz') or f.endswith('.fits.fz') or f.endswith('.fits.fz') or f.endswith('.tar.gz')
-                or f.endswith('.tar') or f.endswith('.zip') or f.endswith('.dat') or f.endswith('.toml')):
+                or f.endswith('.tar') or f.endswith('.zip') or f.endswith('.dat') or f.endswith('.toml')
+                or f.endswith('.yaml')):
             mode = 0o664
         else:
             mode = 0o775
@@ -3350,7 +3351,9 @@ def vorbin_rss(config, w_dir=None):
             continue
         if config['binning'].get('mask_ds9_suffix'):
             f_ds9_mask = os.path.join(cur_wdir, f"{cur_obj.get('name')}{config['binning'].get('mask_ds9_suffix')}")
-        if not os.path.isfile(f_ds9_mask):
+        else:
+            f_ds9_mask = None
+        if f_ds9_mask is None or not os.path.isfile(f_ds9_mask):
             reg_mask = None
         else:
             reg_mask = Regions.read(f_ds9_mask, format='ds9')
@@ -3912,7 +3915,7 @@ def reconstruct_cube(config, w_dir=None):
         expnum = int(expnum)
         rssfile = os.path.join(cur_wdir, pointing,
                                f'lvmSFrame-{expnum:0>8}.fits')
-        with (fits.open(rssfile) as rss):
+        with fits.open(rssfile) as rss:
             wave = ((np.arange(rss['FLUX'].header['NAXIS1']) -
                      rss['FLUX'].header['CRPIX1']) * rss['FLUX'].header['CDELT1'] +
                     rss['FLUX'].header['CRVAL1'])

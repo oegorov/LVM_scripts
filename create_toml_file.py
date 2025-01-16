@@ -130,7 +130,8 @@ copy_cframes = false # Set true if CFrames should be copied to the object folder
 [imaging]
 use_dap = false
 include_sky = false # if true, then subtracted sky will be added back before the flux extraction
-use_single_rss_file = false # if true, then creates single RSS file with all individual fibers and process this file. 
+use_single_rss_file = false # if true, then creates single RSS file with all individual fibers and process this file.
+use_binned_rss_file = false # if true, then process binned RSS file.  
 override_flux_table = true # if true, then overwrites table with measured fluxes every time (otherwise - tries to add new/update existing measurements instead)
 pxscale = 15 # Pixel scale (in arcsec) for output image
 sigma = 2 # arcsec; standard deviation for calculating of the weights of neighbouringfibers
@@ -146,6 +147,7 @@ maps_source = 'maps'
 line = 'Ha'
 target_sn = 30
 correct_vel_line = 'Ha'
+mask_ds9_suffix = '_bin_exclude.reg'
 
 # =======================================
 # === Control for spectra extraction
@@ -160,7 +162,7 @@ file_output_suffix = '_extracted.fits'
 # === Control for DAP fitting
 # =======================================
 [dap_fitting]
-fit_mode = 'extracted' # can be 'extracted' (i.e. based on ds9-masks), 'binned' (i.e. extracted in voronoi bins) or 'rss' (i.e. huge single RSS file)
+fit_mode = 'rss' # can be 'extracted' (i.e. based on ds9-masks), 'binned' (i.e. extracted in voronoi bins) or 'rss' (i.e. huge single RSS file)
 
 
 # =======================================
