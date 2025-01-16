@@ -235,7 +235,7 @@ def LVM_process(config_filename=None, output_dir=None):
                 status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True)
         elif config['imaging'].get('use_binned_rss_file') and 'binning' in config:
             log.info(f"Analysing binned RSS file ({config['binning'].get('target_sn')} "
-                     f"in {config['binning'].get('bin_line')} line) and measuring emission lines")
+                     f"in {config['binning'].get('line')} line) and measuring emission lines")
 
             if not (config['imaging'].get('use_dap') and (config.get('dap_fitting') is not None)
                     and config['dap_fitting'].get('skip_running_dap')):
@@ -344,6 +344,9 @@ def LVM_process(config_filename=None, output_dir=None):
                                                       dec_lims=config['imaging'].get('dec_limits'),
                                                       outfile_prefix=f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec",
                                                       filter_sn=filter_sn, binmap=f_binmap)
+            new_files = glob.glob(cur_wdir)
+            for f in new_files:
+                fix_permission(f)
             status = status & cur_status
         if not status:
             log.error("Critical errors occurred. Exit.")
@@ -451,6 +454,27 @@ def LVM_process(config_filename=None, output_dir=None):
     #     log.info('Skip pixel shift testing')
 
     log.info("Done!")
+
+
+def fix_permission(f):
+    if os.path.exists(f):
+        if (f.endswith('.fits') or f.endswith('.txt') or f.endswith('.reg') or f.endswith('.pdf') or f.endswith('.png')
+            or f.endswith('.fits.gz') or f.endswith('.fits.fz') or f.endswith('.fits.fz') or f.endswith('.tar.gz')
+                or f.endswith('.tar') or f.endswith('.zip') or f.endswith('.dat') or f.endswith('.toml')):
+            mode = 0o664
+        else:
+            mode = 0o775
+        if ((server_group_id is not None) and (os.stat(f).st_gid != server_group_id)):
+            uid = os.stat(f).st_uid
+            try:
+                os.chown(f, uid=uid, gid=server_group_id)
+            except PermissionError:
+                pass
+        try:
+            os.chmod(f, mode)
+        except PermissionError:
+            pass
+
 
 def create_folders_tree(config, w_dir=None):
     try:
@@ -1338,6 +1362,8 @@ def fix_astrometry(file, first_exp=None):
         slitmap['dec'][rec_sci] = dec_fib
         hdu['SLITMAP'] = fits.BinTableHDU(data=slitmap, header=h_tab, name='SLITMAP')
         hdu.writeto(file, overwrite=True)
+        fix_permission(file)
+
 
 def copy_reduced_data(config, output_dir=None):
     if output_dir is None:
@@ -1505,6 +1531,7 @@ def do_coadd_spectra(config, w_dir=None):
                         hdu_ref[ext].data = sigma_clip(hdu_ref[ext].data, sigma=1.3, axis=0, masked=False)
                         hdu_ref[ext].data = np.nanmean(hdu_ref[ext].data, axis=0)
                 hdu_ref.writeto(fout, overwrite=True)
+                fix_permission(fout)
                 statuses.append(True)
 
     if not np.all(statuses):
@@ -1691,8 +1718,6 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                     if 'binnum' in cur_table_fibers.colnames:
                         cur_table_summary.add_column(cur_table_fibers[sci]['binnum'], name='binnum')
 
-
-                    print(np.max([int(v.split('.')[1]) for v in np.array(cur_table_summary['id']).astype(str)]), np.max([int(v.split('.')[1]) for v in np.array(cur_table_fluxes['id']).astype(str)]))
                     for kw in dap_results_correspondence.keys():
                         if isinstance(dap_results_correspondence[kw], str):
                             curline_wl = float(dap_results_correspondence[kw].split('_')[-1])
@@ -1773,10 +1798,12 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
             pdf.savefig(fig_hist)
             plt.close()
             pdf.close()
+            fix_permission(fig_hist)
         # if config['imaging'].get('use_binned_rss_file') or (mode == 'binned'):
         #     tab_summary.add_column(Column(np.array([int(str(v).split('.')[1]) for v in tab_summary['id']]),
         #                                   name='binnum'))
         tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+        fix_permission(f_tab_summary)
     return status_out
 
 def calc_bgr(data):
@@ -1967,6 +1994,7 @@ def process_all_rss(config, w_dir=None):
                 log.info(f"All {len(tab_summary)} fibers are unique")
             tab_summary.remove_columns(['ra_round','dec_round'])
             tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+            fix_permission(f_tab_summary)
 
         #==============================
         log.info("Analysing spectra")
@@ -2144,6 +2172,7 @@ def process_all_rss(config, w_dir=None):
                     cur_ax_id += 1
                 fig.savefig(save_plot_test, bbox_inches='tight')
         table_fluxes.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+        fix_permission(f_tab_summary)
         statuses.append(status_out)
     if not np.all(statuses):
         status_out = False
@@ -2506,13 +2535,17 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         outfile_suffix = names_out[ind]
         if do_median_masking:
             img_arr[:, :, ind] = median_filter(img_arr[:, :, ind], (11, 11))
-        fits.writeto(os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits"),
+        f_out = os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits")
+        fits.writeto(f_out,
                      data=img_arr[:, :, ind], header=header, overwrite=True)
+        fix_permission(f_out)
     if values_errs is not None:
         for ind in range(err_arr.shape[2]):
             outfile_suffix = names_out_errs[ind]
-            fits.writeto(os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits"),
+            f_out = os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits")
+            fits.writeto(f_out,
                          data=err_arr[:, :, ind], header=header, overwrite=True)
+            fix_permission(f_out)
     return True
 
 
@@ -2871,6 +2904,7 @@ def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
     rss_out['MASK'].data[rec] = 1
     rss_out.writeto(f_rss_out, overwrite=True)
     rss_out.close()
+    fix_permission(f_rss_out)
 
 def process_single_rss(config, output_dir=None, binned=False, dap=False, extracted=False):
     """
@@ -2998,6 +3032,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             if commit_change:
                 rss.writeto(f_rss, overwrite=True)
             rss.close()
+            fix_permission(f_rss)
 
             # Run DAP on a single RSS file
             # if neeeded, prepare DAP configuration file using the template from lvmdap/_legacy/lvm-dap_v110.yaml
@@ -3020,6 +3055,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 # save the new configuration file
                 with open(dap_config_file, 'w') as outfile:
                     yaml.dump(dap_config, outfile, default_flow_style=False)
+                fix_permission(dap_config_file)
 
             cdir = os.curdir
             os.chdir(os.environ.get('LVM_DAP'))
@@ -3034,16 +3070,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             """ Fix permissions for the DAP output files """
             new_files = glob.glob(os.path.join(dap_output_dir, '*'))
             for f in new_files:
-                if (server_group_id is not None) and (os.stat(f).st_gid != server_group_id):
-                    uid = os.stat(f).st_uid
-                    try:
-                        os.chown(f, uid=uid, gid=server_group_id)
-                    except PermissionError:
-                        log.error(f"Cannot change group of the DAP output file {f}")
-                try:
-                    os.chmod(f, 0o775)
-                except PermissionError:
-                    log.error(f"Cannot change permissions for the DAP output file {f}")
+                fix_permission(f)
 
             continue
 
@@ -3243,6 +3270,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                     status_out = status_out & True
         rss.close()
         table_fluxes.write(f_tab, overwrite=True, format='ascii.fixed_width_two_line')
+        fix_permission(f_tab)
         statuses.append(status_out)
     return np.all(statuses)
 
@@ -3358,6 +3386,7 @@ def vorbin_rss(config, w_dir=None):
                                                        'fibstatus'], dtype=(int, float, float, str, int))
             hdu_out = fits.HDUList([fits.PrimaryHDU(data=bin_image, header=header), fits.BinTableHDU(tab_summary_bins)])
             hdu_out.writeto(f_binmap, overwrite=True)
+            fix_permission(f_binmap)
         else:
             if not os.path.isfile(f_binmap):
                 log.error(f"Binmap in {bin_line} is not found in '{map_source}' folder for {cur_obj.get('name')}."
@@ -3384,6 +3413,7 @@ def vorbin_rss(config, w_dir=None):
         else:
             tab['binnum'] = binnum_fibers
         tab.write(f_tab_summary, format='ascii.fixed_width_two_line', overwrite=True)
+        fix_permission(f_tab_summary)
 
         #==== Extraction of the spectrum (modified from extract_spectra_ds9)
         hdu_out = fits.HDUList([fits.PrimaryHDU()])
@@ -3472,7 +3502,7 @@ def vorbin_rss(config, w_dir=None):
         hdu_out.append(fits.BinTableHDU(tab_summary_bins_resorted, name='SLITMAP'))
         f_out = os.path.join(cur_wdir, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
         hdu_out.writeto(f_out, overwrite=True)
-
+        fix_permission(f_out)
     return np.all(statuses)
 
 
@@ -3731,7 +3761,9 @@ def extract_spectra_ds9(config, w_dir=None):
         rss_out['MASK'].data[rec] = 1
 
         rss_out.writeto(f_out, overwrite=True)
+        fix_permission(f_out)
         fig.savefig(f_out.replace(".fits", '.pdf'), dpi=300, bbox_inches='tight')
+        fix_permission(f_out.replace(".fits", '.pdf'))
         statuses.append(True)
 
     return np.all(statuses)
@@ -4146,6 +4178,7 @@ def shepard_convolve(wcs_out, shape_out, ra_fibers=None, dec_fibers=None, show_v
         if is_error:
             hdu_out[0].data = np.sqrt(hdu_out[0].data)
         hdu_out.writeto(outfile, overwrite=True, output_verify='silentfix')
+        fix_permission(outfile)
     else:
         if is_error:
             img_out = np.sqrt(img_out)
@@ -4407,6 +4440,7 @@ def create_single_rss(config, w_dir=None):
                                                      trow['targettype'], trow['fibstatus'], fib_id,
                                                      str(cur_flux_corr[exp_id]), str(vcorr)])
             tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+            fix_permission(f_tab_summary)
             tab_summary = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
                                      converters={'sourceid': str, 'fluxcorr': str, 'vhel_corr': str})
             statuses.append(True)
@@ -4574,6 +4608,7 @@ def create_single_rss(config, w_dir=None):
                 rss_out.writeto(fout, overwrite=True)
                 rss_out.close()
                 rss_open = False
+                fix_permission(fout)
             statuses.append(True)
 
     return statuses
