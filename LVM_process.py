@@ -1681,14 +1681,18 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                     cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
 
                     cur_table_summary.add_columns(
-                         [Column(np.array([f'{id_prefix}.{int(cur_fibid+1)}' for cur_fibid in sci]),
+                         [Column(np.array([f'{id_prefix}.{cur_table_fibers[cur_fibid]["fiberid"]}' for cur_fibid in sci]),
                                name='id', dtype=str),
                          Column(np.array([str(cur_flux_corr[exp_id])] * len(cur_table_summary)),
                                 name='fluxcorr', dtype=float),
                          Column(np.array([str(vcorr)] * len(cur_table_summary)), name='vhel_corr',
                                 dtype=float)]
                          )
+                    if 'binnum' in cur_table_fibers.colnames:
+                        cur_table_summary.add_column(cur_table_fibers[sci]['binnum'], name='binnum')
 
+
+                    print(np.max([int(v.split('.')[1]) for v in np.array(cur_table_summary['id']).astype(str)]), np.max([int(v.split('.')[1]) for v in np.array(cur_table_fluxes['id']).astype(str)]))
                     for kw in dap_results_correspondence.keys():
                         if isinstance(dap_results_correspondence[kw], str):
                             curline_wl = float(dap_results_correspondence[kw].split('_')[-1])
@@ -1769,9 +1773,9 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
             pdf.savefig(fig_hist)
             plt.close()
             pdf.close()
-        if config['imaging'].get('use_binned_rss_file') or (mode == 'binned'):
-            tab_summary.add_column(Column(np.array([int(str(v).split('.')[1]) for v in tab_summary['id']]),
-                                          name='binnum'))
+        # if config['imaging'].get('use_binned_rss_file') or (mode == 'binned'):
+        #     tab_summary.add_column(Column(np.array([int(str(v).split('.')[1]) for v in tab_summary['id']]),
+        #                                   name='binnum'))
         tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
     return status_out
 
@@ -2484,15 +2488,15 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         img_arr[:] = np.nan
         err_arr[:] = np.nan
         xxbin, yybin = np.meshgrid(np.arange(binmap.shape[1]), np.arange(binmap.shape[0]))
-        if 'binnum' not in table_fluxes.colnames:
-            binnum_colname = 'id' # in case if the results are produced by DAP
-            dap_processed = True
-        else:
-            binnum_colname = 'binnum'
-            dap_processed = False
-        for bin_ind, cur_bin in enumerate(table_fluxes[binnum_colname]):
-            if dap_processed:
-                cur_bin = int(str(cur_bin).split('.')[1])
+        # if 'binnum' not in table_fluxes.colnames:
+        #     binnum_colname = 'id' # in case if the results are produced by DAP
+        #     dap_processed = True
+        # else:
+        #     binnum_colname = 'binnum'
+        #     dap_processed = False
+        for bin_ind, cur_bin in enumerate(table_fluxes['binnum']):
+            # if dap_processed:
+            #     cur_bin = int(str(cur_bin).split('.')[1])
             rec = np.flatnonzero(binmap.ravel() == cur_bin)
             img_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values[bin_ind, :])[None, None, :]
             err_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values_errs[bin_ind, :])[None, None, :]
@@ -3316,12 +3320,27 @@ def vorbin_rss(config, w_dir=None):
                 f"with what is indicated in 'imaging' block")
             statuses.append(False)
             continue
+        if config['binning'].get('mask_ds9_suffix'):
+            f_ds9_mask = os.path.join(cur_wdir, f"{cur_obj.get('name')}{config['binning'].get('mask_ds9_suffix')}")
+        if not os.path.isfile(f_ds9_mask):
+            reg_mask = None
+        else:
+            reg_mask = Regions.read(f_ds9_mask, format='ds9')
+            log.info(f"Region mask for {cur_obj.get('name')} is used during the binning process")
+
         header = fits.getheader(f_image)
         if not config['binning'].get('use_binmap'):
             signal = fits.getdata(f_image)
             noise = fits.getdata(f_err)
             x, y = np.meshgrid(np.arange(signal.shape[1]), np.arange(signal.shape[0]))
-            rec = (np.isfinite(noise) & (noise > 0) & (signal/noise >= 1)).ravel()
+            if reg_mask is not None:
+                with fits.open(f_image) as hdu:
+                    wcs = WCS(hdu[0].header)
+                    for cur_mask in reg_mask:
+                        rec_exclude = cur_mask.to_pixel(wcs).to_mask().to_image(signal.shape) > 0
+                        signal[rec_exclude] = np.nan
+
+            rec = (np.isfinite(signal) & np.isfinite(noise) & (noise > 0) & (signal/noise >= 1)).ravel()
             # noise[rec] = abs(np.nanmedian(signal)+np.nanstd(signal))
 
             binnum, _, _, x_bar, y_bar, sn, nPixels, _ = voronoi_2d_binning(x.ravel()[rec], y.ravel()[rec],
