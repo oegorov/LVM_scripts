@@ -1663,12 +1663,17 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         log.warning(f"Can't find {cur_fname}")
                         status_out = status_out & False
                         continue
-                    with fits.open(cur_fname_spec) as rss:
-                        cur_table_fibers = Table(rss['SLITMAP'].data)
-                        sci = cur_table_fibers['targettype'] == 'science'
-                        if config['imaging'].get('skip_bad_fibers'):
-                            sci = sci & (cur_table_fibers['fibstatus'] == 0)
-                        sci = np.flatnonzero(sci)
+                    try:
+                        with fits.open(cur_fname) as rss:
+                            cur_table_fibers = Table(rss['PT'].data)
+                            sci = np.arange(len(cur_table_fibers)).astype(int)
+                    except KeyError:
+                        with fits.open(cur_fname_spec) as rss:
+                            cur_table_fibers = Table(rss['SLITMAP'].data)
+                            sci = cur_table_fibers['targettype'] == 'science'
+                            if config['imaging'].get('skip_bad_fibers'):
+                                sci = sci & (cur_table_fibers['fibstatus'] == 0)
+                            sci = np.flatnonzero(sci)
 
                     with fits.open(cur_fname) as rss:
                         # cur_table_fibers = Table(rss['PT'].data)
@@ -2316,7 +2321,10 @@ def derive_radec_ifu(mjd, expnum, first_exp=None, objname=None, pointing_name=No
     if not pa_hdr:
         pa_hdr = 0
     LVMAGCAM_DIR = os.environ.get('LVMAGCAM_DIR')
-    coadds_folder = os.path.join(LVMAGCAM_DIR, str(mjd), 'coadds')
+    if not LVMAGCAM_DIR:
+        coadds_folder = ''
+    else:
+        coadds_folder = os.path.join(LVMAGCAM_DIR, str(mjd), 'coadds')
     if not os.path.exists(coadds_folder):
         coadds_folder = os.path.join(LVMAGCAM_DIR, str(mjd))
     agcscifile = f"{coadds_folder}/lvm.sci.coadd_s{expnum:0>8}.fits"
