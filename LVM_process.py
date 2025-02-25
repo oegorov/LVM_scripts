@@ -461,6 +461,24 @@ def LVM_process(config_filename=None, output_dir=None):
     log.info("Done!")
 
 
+def make_dir_with_permission(subdirs):
+    total_path = os.path.join(*subdirs)
+    if not os.path.exists(total_path):
+        os.makedirs(total_path)
+    dirs_to_check = [os.path.join(*subdirs[:i + 1]) for i in range(len(subdirs))]
+    for d in dirs_to_check:
+        if (server_group_id is not None) and (os.stat(d).st_gid != server_group_id):
+            uid = os.stat(d).st_uid
+            try:
+                os.chown(d, uid=uid, gid=server_group_id)
+            except PermissionError:
+                pass
+        try:
+            os.chmod(d, 0o775)
+        except PermissionError:
+            pass
+
+
 def fix_permission(f):
     if os.path.exists(f):
         if (f.endswith('.fits') or f.endswith('.txt') or f.endswith('.reg') or f.endswith('.pdf') or f.endswith('.png')
@@ -1051,6 +1069,8 @@ def download_from_sas(config):
                             frame_types = ['SFrame']
                             if config['download'].get('include_cframes'):
                                 frame_types.append('CFrame')
+                            make_dir_with_permission([drp_results_dir_sas, short_tileid,
+                                                      tileids[exp_ind], str(data['mjd'])])
                             for ft in frame_types:
                                 f = glob.glob(
                                     os.path.join(drp_results_dir_sas, short_tileid, tileids[exp_ind], str(data['mjd']),
@@ -1066,6 +1086,9 @@ def download_from_sas(config):
                                     rsync.add('lvm_frame', expnum=str(exp), mjd=str(data['mjd']), tileid=tileids[exp_ind],
                                               kind=ft, drpver=f'{red_data_version}')  # /{short_tileid}
                         if download_current_dap:
+
+                            make_dir_with_permission([dap_results_dir_sas, short_tileid,
+                                                      tileids[exp_ind], str(data['mjd']), f'{exp:08d}'])
                             f = glob.glob(
                                 os.path.join(dap_results_dir_sas, short_tileid, tileids[exp_ind], str(data['mjd']),
                                              f'{exp:08d}', f'dap-rsp*{exp:08d}.dap.fits.gz'))
