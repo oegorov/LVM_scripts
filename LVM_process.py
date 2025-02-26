@@ -3276,7 +3276,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
 
             t = Table(rss['SLITMAP'].data)
             if 'vhel_corr' in t.colnames:
-                vhel = t['vhel']
+                vhel = t['vhel_corr']
             else:
                 vhel = np.zeros_like(flux)
             params = zip(flux, ivar, sky, sky_ivar, lsf, vhel, spec_ids)
