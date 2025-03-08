@@ -1672,9 +1672,23 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         cur_flux_corr = data['flux_correction']
                     if isinstance(cur_flux_corr, float) or isinstance(cur_flux_corr, int):
                         cur_flux_corr = [cur_flux_corr]
+
+                    tileid = cur_pointing.get('tileid')
+                    if not tileid:
+                        tileid = data.get('tileid')
+                    if tileid is not None:
+                        if not (isinstance(tileid, list) or isinstance(tileid, tuple)):
+                            tileids = [str(tileid)] * len(exps)
+                        else:
+                            tileids = [str(ti) for ti in tileid]
+                    else:
+                        tileids = None
+
                 else:
                     exps = [0]
                     cur_flux_corr = [1.]
+                    tileids = None
+
                 for exp_id, exp in enumerate(exps):
                     if local_dap_results:
                         cur_fname = data[0]
@@ -1684,8 +1698,30 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         cur_fname_spec = os.path.join(cur_wdir, cur_pointing['name'], f'lvmSFrame-{exp:08d}.fits')
                     if not os.path.exists(cur_fname):
                         log.warning(f"Can't find {cur_fname}")
-                        status_out = status_out & False
-                        continue
+                        if tileids is not None and tileids[exp_id] is not None:
+                            if cur_obj['name'] == 'Orion':
+                                if (int(tileids[exp_id]) < 1027000) & (int(tileids[exp_id]) != 11111):
+                                    tileids[exp_id] = str(int(tileids[exp_id]) + 27748)
+
+                            if tileids[exp_id] == '11111':
+                                short_tileid = '0011XX'
+                            elif tileids[exp_id] == '999':
+                                short_tileid = '0000XX'
+                            else:
+                                short_tileid = tileids[exp_id][:4] + 'XX'
+                            cur_fname_sas = os.path.join(dap_results_dir_sas, short_tileid, tileids[exp_id],
+                                                     str(data['mjd']), f'{exp:08d}',
+                                                     f'dap-rsp108-sn20-{exp:08d}.dap.fits.gz')
+                        else:
+                            cur_fname_sas = None
+                        if os.path.exists(cur_fname_sas):
+
+                            log.warning(f"Found in SAS directory. Copying...")
+                            shutil.copy(cur_fname_sas, cur_fname)
+                            fix_permission(cur_fname)
+                        else:
+                            status_out = status_out & False
+                            continue
                     try:
                         with fits.open(cur_fname) as rss:
                             cur_table_fibers = Table(rss['PT'].data)
