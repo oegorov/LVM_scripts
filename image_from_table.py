@@ -43,7 +43,6 @@ def create_line_image_from_table(file_fluxes=None, columns_to_show=None, pxscale
         log.error(f"File {file_fluxes} does not exist.")
         return False
     table_fluxes = Table.read(file_fluxes, format='fits')
-    print(table_fluxes.info())
     ras = table_fluxes['RA']
     decs = table_fluxes['Dec']
 
