@@ -49,6 +49,7 @@ use_dap = false
 include_sky = false # if true, then subtracted sky will be added back before the flux extraction
 use_single_rss_file = false # if true, then creates single RSS file with all individual fibers and process this file.
 use_binned_rss_file = false # if true, then process binned RSS file.
+use_extracted_rss_file = false # if true, then process extracted RSS file (i.e. integrated spectra based on ds9 masks)
 override_flux_table = true # if true, then overwrites table with measured fluxes every time (otherwise - tries to add new/update existing measurements instead)
 pxscale = 15 # Pixel scale (in arcsec) for output image
 sigma = 2 # arcsec; standard deviation for calculating of the weights of neighbouringfibers

@@ -255,6 +255,21 @@ def LVM_process(config_filename=None, output_dir=None):
         elif config['imaging'].get('use_binned_rss_file'):
             log.error("'binning' block is not present. Exit.")
             return
+        elif config['imaging'].get('use_extracted_rss_file') and 'extraction' in config:
+            log.info(f"Analysing extracted RSS file {config['extraction'].get('file_output_suffix')}"
+                     f" and measuring emission lines")
+
+            if not (config['imaging'].get('use_dap') and (config.get('dap_fitting') is not None)
+                    and config['dap_fitting'].get('skip_running_dap')):
+                status = process_single_rss(config, output_dir=cur_wdir, extracted=True,
+                                            dap=config['imaging'].get('use_dap'))
+                if not status:
+                    return
+            else:
+                log.info("Skip running DAP and go directly to the results parsing")
+            if config['imaging'].get('use_dap'):
+                log.info("Processing DAP results")
+                status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True)
         elif config['imaging'].get('use_dap'):
             log.info("Processing DAP results")
             status = parse_dap_results(config, w_dir=cur_wdir)
