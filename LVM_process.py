@@ -114,7 +114,9 @@ dap_results_correspondence = {
     "HeII": "HeII_4685.68",
     "OIII4363": '[OIII]_4363.21', 'NII5755': '[NII]_5754.59',
     'SII4068': '[SII]_4068.6', 'NeIII3869': '[NeIII]_3868.75',
-    'OII7320': '[OII]_7318.92', 'OII7330': '[OII]_7329.66', 'ArIII7136': '[ArIII]_7135.8'
+    'OII7320': '[OII]_7318.92', 'OII7330': '[OII]_7329.66', 'ArIII7136': '[ArIII]_7135.8',
+    # 'stpop_alpha': 'alpha', 'stpop_Av': 'Av', 'stpop_vel': 'sysvel', 'stpop_disp': 'disp',
+    # 'stpop_mass': 'log_Mass', 'stpop_z': 'z'
 }
 
 # ================================================
@@ -3362,6 +3364,52 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
     return np.all(statuses)
 
 
+def get_fiber_overlap_weights(radec, wcs_ref=None):
+    n_fibers = len(radec)
+    weights = np.ones(shape=n_fibers, dtype=float)
+    if wcs_ref is None or not isinstance(wcs_ref, WCS):
+        log.error("WCS reference is not provided or is not a valid WCS object. "
+                  "Assume fiber weights=1 for spectra extraction ")
+        return weights
+
+    pxsize = wcs_ref.proj_plane_pixel_scales()[0].value * 3600.
+    xc, yc = wcs_ref.world_to_pixel(radec)
+
+    x0_glob = int(np.floor(np.min(xc) - 37./2/pxsize - 1))
+    x1_glob = int(np.ceil(np.max(xc) + 37. / 2 / pxsize + 1))
+    y0_glob = int(np.floor(np.min(yc) - 37. / 2 / pxsize - 1))
+    y1_glob = int(np.ceil(np.max(yc) + 37. / 2 / pxsize + 1))
+
+    image_shape = (y1_glob - y0_glob + 1, x1_glob - x0_glob + 1)
+
+    nfibers_curpix = np.zeros((image_shape[0], image_shape[1]), dtype=int)
+    # xx, yy = np.meshgrid(np.arange(image_shape[1]), np.arange(image_shape[0]))
+    fib_rad = (fiber_d / 2 / pxsize)
+    for i in range(n_fibers):
+        y0, y1 = (max(0, int(np.floor(yc[i] - y0_glob - fib_rad))),
+                  min(image_shape[0], int(np.ceil(yc[i] - y0_glob + fib_rad)) + 1))
+        x0, x1 = (max(0, int(np.floor(xc[i] - x0_glob - fib_rad))),
+                  min(image_shape[1], int(np.ceil(xc[i] - x0_glob + fib_rad)) + 1))
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        rec = ((yy - yc[i] + y0_glob) ** 2 + (xx - xc[i] + x0_glob) ** 2) <= (fib_rad ** 2)
+        nfibers_curpix[y0:y1, x0:x1][rec] += 1
+
+    covered = nfibers_curpix > 0
+
+    weights_2d = np.zeros(image_shape, dtype=float)
+    weights_2d[covered] = 1 / nfibers_curpix.astype(float)[covered]
+    for i in range(n_fibers):
+        y0, y1 = (max(0, int(np.floor(yc[i] - y0_glob - fib_rad))),
+                  min(image_shape[0], int(np.ceil(yc[i] - y0_glob + fib_rad)) + 1))
+        x0, x1 = (max(0, int(np.floor(xc[i] - x0_glob - fib_rad))),
+                  min(image_shape[1], int(np.ceil(xc[i] - x0_glob + fib_rad)) + 1))
+        yy, xx = np.ogrid[y0:y1, x0:x1]
+        rec = ((xx - xc[i] + x0_glob) ** 2 + (yy - yc[i] + y0_glob) ** 2) <= (fib_rad ** 2)
+        weights[i] = np.sum(weights_2d[y0:y1, x0:x1][rec]) / np.sum(rec).astype(float)
+
+    return weights
+
+
 def sn_func(index, signal=None, noise=None):
     sn = np.nansum(signal[index])/np.sqrt(np.nansum(noise[index]**2))
 
@@ -3472,7 +3520,8 @@ def vorbin_rss(config, w_dir=None):
             radec_bin = wcs.pixel_to_world(x_bar, y_bar)
             tab_summary_bins = Table(data=[np.unique(binnum), radec_bin.ra.degree, radec_bin.dec.degree, ['science']*len(radec_bin),
                                            [0]*len(radec_bin)], names=['fiberid', 'fib_ra', 'fib_dec', 'targettype',
-                                                       'fibstatus'], dtype=(int, float, float, str, int))
+                                                       'fibstatus', 'n_fibers_total', 'area_fibers'],
+                                     dtype=(int, float, float, str, int, int, float))
             hdu_out = fits.HDUList([fits.PrimaryHDU(data=bin_image, header=header), fits.BinTableHDU(tab_summary_bins)])
             hdu_out.writeto(f_binmap, overwrite=True)
             fix_permission(f_binmap)
@@ -3492,7 +3541,8 @@ def vorbin_rss(config, w_dir=None):
                          converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
                                      'fluxcorr_z': str, 'vhel_corr': str})
         wcs = WCS(header)
-        tab_x, tab_y = wcs.world_to_pixel(SkyCoord(ra=tab['fib_ra'], dec=tab['fib_dec'], unit=('degree','degree')))
+        radec = SkyCoord(ra=tab['fib_ra'], dec=tab['fib_dec'], unit=('degree', 'degree'))
+        tab_x, tab_y = wcs.world_to_pixel(radec)
         binnum_fibers = np.zeros(shape=len(tab), dtype=int)-1
         rec = np.flatnonzero((tab_x >= 0) & (tab_y >= 0) & (tab_x <= (bin_image.shape[1]-1)) & (tab_y <= (bin_image.shape[0]-1)))
         for r in rec:
@@ -3549,10 +3599,25 @@ def vorbin_rss(config, w_dir=None):
                 gc.collect()
             res = np.array(res)
 
-            cur_flux = np.atleast_2d(np.nanmean(res[:, 0, :], axis=0))# / np.pi / (fiber_d ** 2 / 4))
-            cur_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 1, :] ** 2, axis=0)))# / np.pi / (fiber_d ** 2 / 4))
-            cur_sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0))# / np.pi / (fiber_d ** 2 / 4))
-            cur_sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0)))# / np.pi / (fiber_d ** 2 / 4))
+            fiber_weights = get_fiber_overlap_weights(radec[in_reg], wcs_ref=wcs)
+
+            weights_mask = np.isfinite(res[:, 0, :]) & (res[:, 0, :] != 0)
+            fiber_weights_2d = np.tile(fiber_weights, (res.shape[2], 1)).T
+            fiber_weights_2d[~weights_mask] = 0
+
+            cur_flux = np.atleast_2d(np.nansum(res[:, 0, :] * fiber_weights[:, None], axis=0) / np.nansum(fiber_weights_2d,
+                                                                                                         axis=0))  # /np.pi/(fiber_d**2/4))
+            cur_error = np.atleast_2d(np.sqrt(np.nansum(res[:, 1, :] ** 2 * fiber_weights[:, None] ** 2, axis=0)) / np.nansum(
+                fiber_weights_2d, axis=0))  # /np.pi/(fiber_d**2/4))
+            cur_sky = np.atleast_2d(np.nansum(res[:, 2, :] * fiber_weights[:, None], axis=0) / np.nansum(fiber_weights_2d,
+                                                                                       axis=0))  # /np.pi/(fiber_d**2/4))
+            cur_sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2 * fiber_weights[:, None] ** 2, axis=0)) / np.nansum(
+                fiber_weights_2d, axis=0))  # /np.pi/(fiber_d**2/4))
+
+            # cur_flux = np.atleast_2d(np.nanmean(res[:, 0, :], axis=0))# / np.pi / (fiber_d ** 2 / 4))
+            # cur_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 1, :] ** 2, axis=0)))# / np.pi / (fiber_d ** 2 / 4))
+            # cur_sky = np.atleast_2d(np.nanmean(res[:, 2, :], axis=0))# / np.pi / (fiber_d ** 2 / 4))
+            # cur_sky_error = np.atleast_2d(np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0)))# / np.pi / (fiber_d ** 2 / 4))
             cur_lsf = np.atleast_2d(np.nanmean(res[:, 5, :], axis=0))
 
             if cur_bin_id == 0:
@@ -3562,14 +3627,15 @@ def vorbin_rss(config, w_dir=None):
                 sky_error = np.empty(shape=(len(uniq_bins), cur_flux.shape[1]), dtype=float)
                 lsf = np.empty(shape=(len(uniq_bins), cur_flux.shape[1]), dtype=float)
                 tab_summary_bins_resorted = Table(data=None, names=['fiberid', 'fib_ra',
-                                                                    'fib_dec', 'targettype', 'fibstatus', 'binnum'],
-                                                  dtype=(int, float, float, str, int, int))
+                                                                    'fib_dec', 'targettype', 'fibstatus', 'binnum',
+                                                                    'n_fibers_total', 'area_fibers'],
+                                                  dtype=(int, float, float, str, int, int, int, float))
 
             rec = tab_summary_bins['fiberid'] == cur_bin
             tab_summary_bins_resorted.add_row([tab_summary_bins['fiberid'][rec], tab_summary_bins['fib_ra'][rec],
                                                tab_summary_bins['fib_dec'][rec], tab_summary_bins['targettype'][rec],
                                                tab_summary_bins['fibstatus'][rec],
-                                               cur_bin])
+                                               cur_bin, len(in_reg), np.sum(fiber_weights)])
             flux[cur_bin_id] = cur_flux[0,:]
             error[cur_bin_id] = cur_error[0, :]
             sky[cur_bin_id] = cur_sky[0, :]
@@ -3587,7 +3653,7 @@ def vorbin_rss(config, w_dir=None):
             hdu.header['CDELT1'] = res[0, 4, 1] - res[0, 4, 0]
             hdu.header['CTYPE1'] = 'WAV-AWAV'
             hdu_out.append(hdu)
-
+        hdu_out['FLUX'].header['BUNIT'] = 'erg/s/cm^2/A/fiber'
         hdu_out.append(fits.BinTableHDU(tab_summary_bins_resorted, name='SLITMAP'))
         f_out = os.path.join(cur_wdir, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
         hdu_out.writeto(f_out, overwrite=True)
@@ -3600,7 +3666,8 @@ def extract_spectra_ds9(config, w_dir=None):
         Extract spectra in given ds9 regions
         :param config: dictionary with configuration parameters
         :param output_dir: path to output directory
-        :return:
+        :return: Extracted spectrum in units erg/s/cm^2/AA/fiber
+            (needs to be multiplied by a number of fibers) to get total flux
         """
     if w_dir is None or not os.path.exists(w_dir):
         log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
@@ -3733,10 +3800,9 @@ def extract_spectra_ds9(config, w_dir=None):
             decs_reg.append(cur_dec)
 
         tab_slitmap_out = Table(
-            data=[np.array(regnames), np.arange(len(regions))+1,
-                  np.array(ras_reg), np.array(decs_reg), ['science'] * len(regions),
-                  [0] * len(regions)], names=['regname', 'fiberid', 'fib_ra', 'fib_dec', 'targettype', 'fibstatus'],
-            dtype=(str, int, float, float, str, int))
+            data=None, names=['regname', 'fiberid', 'fib_ra', 'fib_dec', 'targettype', 'fibstatus',
+                                              'n_fibers_total', 'area_fibers'],
+            dtype=(str, int, float, float, str, int, int, float))
         rss_out = fits.HDUList([fits.PrimaryHDU(data=None),
                                 fits.ImageHDU(data=np.zeros(shape=(len(regions), nx_spec), dtype=float), name='FLUX'),
                                 fits.ImageHDU(data=np.zeros(shape=(len(regions), nx_spec), dtype=float), name='IVAR')])
@@ -3750,8 +3816,8 @@ def extract_spectra_ds9(config, w_dir=None):
                 else:
                     shape = nx_spec
                 rss_out.append(fits.ImageHDU(data=np.zeros(shape=shape, dtype=float), name=kw))
-            if kw == 'SKY_IVAR':
-                rss_out.append(fits.BinTableHDU(data=tab_slitmap_out, name='SLITMAP'))
+            # if kw == 'SKY_IVAR':
+            #     rss_out.append(fits.BinTableHDU(data=tab_slitmap_out, name='SLITMAP'))
             rss_out.writeto(f_out, overwrite=True)
             rss_out.close()
 
@@ -3819,11 +3885,16 @@ def extract_spectra_ds9(config, w_dir=None):
                 pool.join()
                 gc.collect()
             res = np.array(res)
+            fiber_weights = get_fiber_overlap_weights(radec[in_reg], wcs_ref=wcs_ref)
 
-            flux = np.nanmean(res[:,0,:], axis=0)#/np.pi/(fiber_d**2/4))
-            error = np.sqrt(np.nanmean(res[:, 1, :]**2, axis=0))#/np.pi/(fiber_d**2/4))
-            sky = np.nanmean(res[:, 2, :], axis=0)#/np.pi/(fiber_d**2/4))
-            sky_error = np.sqrt(np.nanmean(res[:, 3, :] ** 2, axis=0))#/np.pi/(fiber_d**2/4))
+            weights_mask = np.isfinite(res[:,0,:]) & (res[:,0,:] != 0)
+            fiber_weights_2d = np.tile(fiber_weights, (res.shape[2], 1)).T
+            fiber_weights_2d[~weights_mask] = 0
+
+            flux = np.nansum(res[:,0,:] * fiber_weights[:, None], axis=0)/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
+            error = np.sqrt(np.nansum(res[:, 1, :]**2 * fiber_weights[:, None] ** 2, axis=0))/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
+            sky = np.nansum(res[:, 2, :] * fiber_weights[:, None], axis=0)/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
+            sky_error = np.sqrt(np.nanmean(res[:, 3, :] ** 2 * fiber_weights[:, None] ** 2, axis=0))/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
             cur_lsf = np.nanmean(res[:, 5, :], axis=0)
 
             rss_out['FLUX'].data[cur_reg_id, :] = np.float32(flux)
@@ -3831,6 +3902,9 @@ def extract_spectra_ds9(config, w_dir=None):
             rss_out['SKY'].data[cur_reg_id, :] = np.float32(sky)
             rss_out['SKY_IVAR'].data[cur_reg_id, :] = np.float32(1/(sky_error**2))
             rss_out['LSF'].data[cur_reg_id, :] = np.float32(cur_lsf)
+
+            tab_slitmap_out.add_row([cur_reg_name, cur_reg_id+1, ras_reg[cur_reg_id], decs_reg[cur_reg_id],
+                                 'science', 0, len(in_reg), np.sum(fiber_weights)])
 
             if cur_reg_id < nregs_to_show:
                 ax = fig.add_subplot(gs[cur_reg_id])
@@ -3848,6 +3922,9 @@ def extract_spectra_ds9(config, w_dir=None):
         rss_out['WAVE'].data = res[0, 4, :]
         rec = ~np.isfinite(rss_out['FLUX'].data)
         rss_out['MASK'].data[rec] = 1
+
+        rss_out.append(fits.BinTableHDU(tab_slitmap_out, name='SLITMAP'))
+        rss_out['FLUX'].header['BUNIT'] = 'erg/s/cm^2/A/fiber'
 
         rss_out.writeto(f_out, overwrite=True)
         fix_permission(f_out)
