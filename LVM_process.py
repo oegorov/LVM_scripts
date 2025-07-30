@@ -3834,32 +3834,33 @@ def extract_spectra_ds9(config, w_dir=None):
                 log.warning(f"No fibers within region {cur_reg_name}")
                 continue
 
+            if not config['imaging'].get('use_dap'):
+                sourceid = table_fluxes[in_reg]['sourceid']
+                fluxcorr_b = table_fluxes[in_reg]['fluxcorr_b']
+                fluxcorr_r = table_fluxes[in_reg]['fluxcorr_r']
+                fluxcorr_z = table_fluxes[in_reg]['fluxcorr_z']
+            else:
+                sourceid = []
+                for v in table_fluxes[in_reg]['id']:
+                    dap_id = str(v).split('.')
+                    exp_id = int(dap_id[0])
+                    fib_id = int(dap_id[1])
+                    pointing_id_found = False
+                    for cur_pointing in cur_obj.get('pointing'):
+                        for cur_data in cur_pointing.get('data'):
+                            if exp_id in cur_data.get('exp'):
+                                pointing_id = cur_pointing.get('name')
+                                pointing_id_found = True
+                                break
+                        if pointing_id_found:
+                            break
+                    sourceid.append('_'.join([str(pointing_id), f"{exp_id:08d}", f"{fib_id:04d}"]))
+                fluxcorr_b = table_fluxes[in_reg]['fluxcorr']
+                fluxcorr_r = table_fluxes[in_reg]['fluxcorr']
+                fluxcorr_z = table_fluxes[in_reg]['fluxcorr']
+
             if correct_vel_line is not None:
                 med_vel = np.nanmedian(table_fluxes[in_reg][f'{correct_vel_line}_vel'])
-                if not config['imaging'].get('use_dap'):
-                    sourceid = table_fluxes[in_reg]['sourceid']
-                    fluxcorr_b = table_fluxes[in_reg]['fluxcorr_b']
-                    fluxcorr_r = table_fluxes[in_reg]['fluxcorr_r']
-                    fluxcorr_z = table_fluxes[in_reg]['fluxcorr_z']
-                else:
-                    sourceid = []
-                    for v in table_fluxes[in_reg]['id']:
-                        dap_id = str(v).split('.')
-                        exp_id = int(dap_id[0])
-                        fib_id = int(dap_id[1])
-                        pointing_id_found = False
-                        for cur_pointing in cur_obj.get('pointing'):
-                            for cur_data in cur_pointing.get('data'):
-                                if exp_id in cur_data.get('exp'):
-                                    pointing_id = cur_pointing.get('name')
-                                    pointing_id_found = True
-                                    break
-                            if pointing_id_found:
-                                break
-                        sourceid.append('_'.join([str(pointing_id), f"{exp_id:08d}", f"{fib_id:04d}"]))
-                    fluxcorr_b = table_fluxes[in_reg]['fluxcorr']
-                    fluxcorr_r = table_fluxes[in_reg]['fluxcorr']
-                    fluxcorr_z = table_fluxes[in_reg]['fluxcorr']
                 params = zip(sourceid, fluxcorr_b,
                              fluxcorr_r, fluxcorr_z,
                              table_fluxes[in_reg]['vhel_corr'], table_fluxes[in_reg][f'{correct_vel_line}_vel']-med_vel,
