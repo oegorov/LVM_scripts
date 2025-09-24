@@ -294,6 +294,7 @@ def LVM_process(config_filename=None, output_dir=None):
         if config['imaging'].get('lines') is None:
             log.info("Nothing to show. Exit")
             return
+        pxscale_img = config['imaging'].get('pxscale')
         for cur_obj in config['object']:
             if not cur_obj.get('version'):
                 version = ''
@@ -331,8 +332,19 @@ def LVM_process(config_filename=None, output_dir=None):
                     maps_source = config['binning'].get('maps_source')
                 else:
                     maps_source = 'maps'
+                if not config['binning'].get('pxscale'):
+                    pxscale_bin = config['imaging'].get('pxscale')
+                    log.info(f"Pixscale of the source image for binmap is not provided in the 'binning' block. "
+                             f"Assume {pxscale_bin} arcsec from the 'imaging' block")
+                else:
+                    pxscale_bin = config['binning'].get('pxscale')
+                if pxscale_bin != config['imaging'].get('pxscale'):
+                    log.warning(f"Pixscale must be equal to those used for building binmap! Force change to {pxscale_bin}!")
+                    pxscale_img = pxscale_bin
+                else:
+                    pxscale_img = config['imaging'].get('pxscale')
                 f_binmap = os.path.join(cur_wdir, maps_source,
-                                        f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
+                                        f"{cur_obj.get('name')}_{pxscale_bin}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
                 if config['imaging'].get('use_dap'):
                     file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS_dap')
@@ -359,12 +371,12 @@ def LVM_process(config_filename=None, output_dir=None):
                 filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
 
             cur_status = create_line_image_from_table(file_fluxes=file_fluxes, lines=line_list,
-                                                      pxscale_out=config['imaging'].get('pxscale'),
+                                                      pxscale_out=pxscale_img,
                                                       r_lim=config['imaging'].get('r_lim'),
                                                       sigma=config['imaging'].get('sigma'),
                                                       output_dir=cur_wdir, ra_lims=config['imaging'].get('ra_limits'),
                                                       dec_lims=config['imaging'].get('dec_limits'),
-                                                      outfile_prefix=f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec",
+                                                      outfile_prefix=f"{cur_obj.get('name')}_{pxscale_img}asec",
                                                       filter_sn=filter_sn, binmap=f_binmap)
             new_files = glob.glob(cur_wdir)
             for f in new_files:
@@ -2009,8 +2021,8 @@ def process_all_rss(config, w_dir=None):
                                         rss[0].header['STDSENMB'])
                                     cur_flux_corr_z[exp_id] = float(rss[0].header['SCISENMZ']) / float(
                                         rss[0].header['STDSENMZ'])
-                            residual_background = calc_bgr(rss['FLUX'].data[sci])
-                            log.info(f"Bgr for {exp}: {residual_background}")
+                            residual_background = 0#calc_bgr(rss['FLUX'].data[sci]) # skip measuring the residual background
+                            # log.info(f"Bgr for {exp}: {residual_background}")
                             try:
                                 radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
                                                          dec=rss[0].header['POSCIDE'],
@@ -2606,15 +2618,15 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         img_arr[:] = np.nan
         err_arr[:] = np.nan
         xxbin, yybin = np.meshgrid(np.arange(binmap.shape[1]), np.arange(binmap.shape[0]))
-        # if 'binnum' not in table_fluxes.colnames:
-        #     binnum_colname = 'id' # in case if the results are produced by DAP
-        #     dap_processed = True
-        # else:
-        #     binnum_colname = 'binnum'
-        #     dap_processed = False
-        for bin_ind, cur_bin in enumerate(table_fluxes['binnum']):
-            # if dap_processed:
-            #     cur_bin = int(str(cur_bin).split('.')[1])
+        if 'binnum' not in table_fluxes.colnames:
+            binnum_colname = 'id' # in case if the results are produced by DAP
+            dap_processed = True
+        else:
+            binnum_colname = 'binnum'
+            dap_processed = False
+        for bin_ind, cur_bin in enumerate(table_fluxes[binnum_colname]):#'binnum']):
+            if dap_processed:
+                cur_bin = int(str(cur_bin).split('.')[1])
             rec = np.flatnonzero(binmap.ravel() == cur_bin)
             img_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values[bin_ind, :])[None, None, :]
             err_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values_errs[bin_ind, :])[None, None, :]
@@ -3450,6 +3462,16 @@ def vorbin_rss(config, w_dir=None):
         map_source = 'maps'
     else:
         map_source = config['binning'].get('maps_source')
+    if config['binning'].get('sn_prefilter') is None:
+        sn_prefilter = 1.
+    else:
+        sn_prefilter = float(config['binning'].get('sn_prefilter'))
+    if not config['binning'].get('pxscale'):
+        pxscale_bin = config['imaging'].get('pxscale')
+        log.info(f"Pixscale of the source image is not provided in the 'binning' block. "
+                 f"Assume {pxscale_bin} arcsec from the 'imaging' block")
+    else:
+        pxscale_bin = config['binning'].get('pxscale')
     for cur_obj in config['object']:
         if not cur_obj.get('version'):
             version = ''
@@ -3471,16 +3493,15 @@ def vorbin_rss(config, w_dir=None):
         log.info(f"Performing voronoi binning for object {cur_obj.get('name')}. "
                  f"Target SN={target_sn} in {bin_line} line.")
         f_binmap = os.path.join(cur_wdir, map_source,
-                                f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
+                                f"{cur_obj.get('name')}_{pxscale_bin}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
         f_image = os.path.join(cur_wdir, map_source,
-                               f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_flux.fits")
+                               f"{cur_obj.get('name')}_{pxscale_bin}asec_{bin_line}_flux.fits")
         f_err = os.path.join(cur_wdir, map_source,
-                             f"{cur_obj.get('name')}_{config['imaging'].get('pxscale')}asec_{bin_line}_fluxerr.fits")
+                             f"{cur_obj.get('name')}_{pxscale_bin}asec_{bin_line}_fluxerr.fits")
         if not os.path.isfile(f_image) or not os.path.isfile(f_err):
             log.error(
-                f"Maps of flux and errors in {bin_line} must be created in 'maps' folder for {cur_obj.get('name')}"
-                f" before the binning. If they are there already, check that pixscale is consistent "
-                f"with what is indicated in 'imaging' block")
+                f"Maps of flux and errors in {bin_line} at {pxscale_bin} scale must be created "
+                f"in 'maps' folder for {cur_obj.get('name')} before the binning.")
             statuses.append(False)
             continue
         if config['binning'].get('mask_ds9_suffix'):
@@ -3497,6 +3518,11 @@ def vorbin_rss(config, w_dir=None):
         if not config['binning'].get('use_binmap'):
             signal = fits.getdata(f_image)
             noise = fits.getdata(f_err)
+            if config['binning'].get('rescale_noise'):
+                noise_scale = np.sqrt(np.pi * (fiber_d / 2) ** 2 / float(pxscale_bin)**2)
+                log.info(f"Increasing noise by {np.round(noise_scale,2)} assuming that the average S/N per arcsec "
+                         f"in {pxscale_bin}arcsec images are the same as in the individual fibers")
+                noise *= noise_scale
             x, y = np.meshgrid(np.arange(signal.shape[1]), np.arange(signal.shape[0]))
             if reg_mask is not None:
                 with fits.open(f_image) as hdu:
@@ -3505,22 +3531,28 @@ def vorbin_rss(config, w_dir=None):
                         rec_exclude = cur_mask.to_pixel(wcs).to_mask().to_image(signal.shape) > 0
                         signal[rec_exclude] = np.nan
 
-            rec = (np.isfinite(signal) & np.isfinite(noise) & (noise > 0) & (signal/noise >= 1)).ravel()
+            rec = (np.isfinite(signal) & (signal != 0) & np.isfinite(noise) & (noise > 0) & (signal/noise >= sn_prefilter)).ravel()
+            log.info(f"Number of pixels with S/N>={sn_prefilter} in {bin_line} line: "
+                     f"{np.sum(rec)} ({np.sum(rec)/signal.size*100:.2f}%). Consider these pixels for binning.")
             # noise[rec] = abs(np.nanmedian(signal)+np.nanstd(signal))
 
-            binnum, _, _, x_bar, y_bar, sn, nPixels, _ = voronoi_2d_binning(x.ravel()[rec], y.ravel()[rec],
+            binnum, _, _, x_bar, y_bar, sn, npixels, _ = voronoi_2d_binning(x.ravel()[rec], y.ravel()[rec],
                                                                                         signal.ravel()[rec], noise.ravel()[rec],
                                                                                         target_sn, plot=0, quiet=1,
-                                                                            pixelsize=1, sn_func=sn_func, cvt=False)
+                                                                            pixelsize=1, sn_func=sn_func, cvt=False, wvt=True)
             bin_image = np.zeros_like(signal, dtype=int) - 1
             bin_image.ravel()[rec] = binnum
             # bin_image = binnum.reshape(signal.shape)
 
+            good_bins = np.unique(binnum)
+            npixels = npixels[good_bins]
+            sn = sn[good_bins]
             wcs = WCS(header)
             radec_bin = wcs.pixel_to_world(x_bar, y_bar)
-            tab_summary_bins = Table(data=[np.unique(binnum), radec_bin.ra.degree, radec_bin.dec.degree, ['science']*len(radec_bin),
-                                           [0]*len(radec_bin)], names=['fiberid', 'fib_ra', 'fib_dec', 'targettype',
-                                                       'fibstatus', 'n_fibers_total', 'area_fibers'],
+
+            tab_summary_bins = Table(data=[good_bins, radec_bin.ra.degree, radec_bin.dec.degree, ['science']*len(radec_bin),
+                                           [0]*len(radec_bin), npixels, sn], names=['fiberid', 'fib_ra', 'fib_dec', 'targettype',
+                                                       'fibstatus', 'npix', 'sn'],
                                      dtype=(int, float, float, str, int, int, float))
             hdu_out = fits.HDUList([fits.PrimaryHDU(data=bin_image, header=header), fits.BinTableHDU(tab_summary_bins)])
             hdu_out.writeto(f_binmap, overwrite=True)
@@ -3692,12 +3724,16 @@ def extract_spectra_ds9(config, w_dir=None):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
             continue
+        if config['imaging'].get('use_single_rss_file'):
+            log.warning("For now, the extraction of spectra from single RSS file is not supported. "
+                        "Table with the analysis results of the original RSS frames need to be available! "
+                        "Check if it is there and have a correct version!")
         if not config['imaging'].get('use_dap'):
             f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
         else:
             f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
         if not os.path.isfile(f_tab_summary):
-            log.error(f"Table with the results of the RSS analysis doesn't exist. "
+            log.error(f"Table with the results of the RSS analysis doesn't exist (searched for {f_tab_summary}). "
                       f"Anylise_rss step must be run before the spectra extraction. "
                       f"Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
