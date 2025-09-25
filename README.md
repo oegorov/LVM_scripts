@@ -1,6 +1,8 @@
 # LVM_scripts
 **Disclaimer: These scripts are intended for simplifying/automatizing work with the LVM data and performing some advanced analysis of these data at our local server at ARI. However, they can be easily adapted for other machines, if necessary.**
 
+**Disclaimer #2: This README might be outdated, and running the script is much easier than it seems from this file. This script is evolving, so if you want to use it for your own science - better just send me a message, and I'll be happy to help**  
+
 *LMV_process.py* script is used for processing the LVM data on the local computing cluster. 
 For this purpose, this script takes the information about tiles/exposures of interest from TOML config file and processes them through several steps (any step can be skipped):
 - Downloading data from SAS
