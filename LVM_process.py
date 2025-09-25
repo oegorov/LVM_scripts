@@ -1912,6 +1912,55 @@ def calc_bgr(data):
     """
     return np.nanmedian(data[(data<np.nanpercentile(data, 60)) & (data>np.nanpercentile(data, 5))])
 
+def test_calibrations(rss, expnum, check_mode='SCI', fallback_mode='SCI'):
+    """
+    Checks model, sci and std star fluxes and their errors to find potential problems with flux calibration
+    1. If stderr/med > 0.2 in any band
+    2. If sci/std ratio differs by more than 10% from 1 in any band
+    If any of these conditions is True, a warning is printed to the log file
+    3. If problems are found, the flux correction factors for b,r,z bands are returned
+
+    :param rss: RSS fits file opened with fits.open()
+    :param expnum: exposure number
+    :return:
+    """
+    # check current fluxcal mode:
+    cur_mode = rss[0].header['FLUXCAL']
+    if fallback_mode is None:
+        fallback_mode = 'SCI'
+    elif (type(fallback_mode) is bool and (not fallback_mode)):
+        fallback_mode = cur_mode
+    if cur_mode is None:
+        log.warning(f"Alternative flux calibrations are not accessible for {expnum} (FLUXCAL is not set)")
+        return np.array([1.,1.,1.])
+
+    if not (rss[0].header.get('STDSENMR') and (rss[0].header.get('SCISENMR') or rss[0].header.get('MODSENMR'))):
+        log.warning(f"Alternative flux calibrations are not accessible for {expnum} (no std/sci/model sens. in header)")
+        return np.array([1.,1.,1.])
+
+    if ((rss[0].header[f'{cur_mode}SENMR'] < 0) or
+            (rss[0].header[f'{cur_mode}SENRR'] / rss[0].header[f'{cur_mode}SENMR'] > 0.2) or
+            (abs(np.log10(float(rss[0].header[f'{check_mode}SENMR']) / float(rss[0].header[f'{cur_mode}SENMR']))) > 0.1)):
+            log.warning(f"{expnum} has potential problems with flux calib: "
+                        f"{cur_mode} stderr/med={np.round(rss[0].header[f'{cur_mode}SENRB'] / rss[0].header[f'{cur_mode}SENMB'], 2)}, "
+                        f"{np.round(rss[0].header[f'{cur_mode}SENRR'] / rss[0].header[f'{cur_mode}SENMR'], 2)}, "
+                        f"{np.round(rss[0].header[f'{cur_mode}SENRZ'] / rss[0].header[f'{cur_mode}SENMZ'], 2)}, "
+                        f"{check_mode}/{cur_mode} = {np.round(float(rss[0].header[f'{check_mode}SENMB']) / float(rss[0].header[f'{cur_mode}SENMB']), 2)}, "
+                        f"{np.round(float(rss[0].header[f'{check_mode}SENMR']) / float(rss[0].header[f'{cur_mode}SENMR']), 2)},"
+                        f"{np.round(float(rss[0].header[f'{check_mode}SENMZ']) / float(rss[0].header[f'{cur_mode}SENMZ']), 2)} in b,r,z.")
+            if fallback_mode != cur_mode:
+                log.warning(f"Normalize flux to match {fallback_mode} flux calibration instead of {cur_mode} for expnum {expnum}")
+                return np.array([float(rss[0].header[f'{fallback_mode}SENMB']) / float(
+                    rss[0].header[f'{cur_mode}SENMB']), float(rss[0].header[f'{fallback_mode}SENMR']) / float(
+                    rss[0].header[f'{cur_mode}SENMR']), float(rss[0].header[f'{fallback_mode}SENMZ']) / float(
+                    rss[0].header[f'{cur_mode}SENMZ'])])
+            else:
+                log.warning(f"Use {cur_mode} for expnum {expnum}, but it has potential problems.")
+                return np.array([1., 1., 1.])
+
+    else:
+        return np.array([1.,1.,1.])
+
 def process_all_rss(config, w_dir=None):
     """
     Create table with fluxes from all rss files
@@ -2003,24 +2052,14 @@ def process_all_rss(config, w_dir=None):
                             if config['imaging'].get('skip_bad_fibers'):
                                 sci = sci & (cur_table_fibers['fibstatus'] == 0)
                             sci = np.flatnonzero(sci)
-                            if rss[0].header.get('STDSENMR') and rss[0].header.get('SCISENMR'):
-                                if ((rss[0].header['STDSENMR'] < 0) or (rss[0].header['STDSENMR'] < 0) or
-                                    (rss[0].header['STDSENMR'] < 0) or (rss[0].header['STDSENRR']/rss[0].header['STDSENMR'] > 0.2) or
-                                    abs(np.log10(float(rss[0].header['SCISENMR'])/float(rss[0].header['STDSENMR'])))>0.1):
-                                    log.warning(f"{exp} has potential problems with flux calib: "
-                                                f"stderr/med={np.round(rss[0].header['STDSENRB']/rss[0].header['STDSENMB'],2)}, "
-                                                f"{np.round(rss[0].header['STDSENRR']/rss[0].header['STDSENMR'],2)}, "
-                                                f"{np.round(rss[0].header['STDSENRZ']/rss[0].header['STDSENMZ'],2)}, "
-                                                f"sci/std = {np.round(float(rss[0].header['SCISENMB'])/float(rss[0].header['STDSENMB']),2)}, "
-                                                f"{np.round(float(rss[0].header['SCISENMR'])/float(rss[0].header['STDSENMR']),2)},"
-                                                f"{np.round(float(rss[0].header['SCISENMZ'])/float(rss[0].header['STDSENMZ']),2)} in b,r,z")
 
-                                    cur_flux_corr_r[exp_id] = float(rss[0].header['SCISENMR']) / float(
-                                        rss[0].header['STDSENMR'])
-                                    cur_flux_corr_b[exp_id] = float(rss[0].header['SCISENMB']) / float(
-                                        rss[0].header['STDSENMB'])
-                                    cur_flux_corr_z[exp_id] = float(rss[0].header['SCISENMZ']) / float(
-                                        rss[0].header['STDSENMZ'])
+                            fc = test_calibrations(rss, exp, check_mode='SCI',
+                                                   fallback_mode=config['imaging'].get('fallback_fluxcal'))
+
+                            cur_flux_corr_b[exp_id] *= fc[0]
+                            cur_flux_corr_r[exp_id] *= fc[1]
+                            cur_flux_corr_z[exp_id] *= fc[2]
+
                             residual_background = 0#calc_bgr(rss['FLUX'].data[sci]) # skip measuring the residual background
                             # log.info(f"Bgr for {exp}: {residual_background}")
                             try:
@@ -2062,7 +2101,7 @@ def process_all_rss(config, w_dir=None):
                                                       ))
 
                         tab_summary = vstack([tab_summary, cur_table_summary])
-
+            return
             radec_compare = np.array([tab_summary['ra_round'], tab_summary['dec_round']]).T
             order = np.lexsort(radec_compare.T)
             radec_compare = radec_compare[order]
@@ -4608,6 +4647,9 @@ def create_single_rss(config, w_dir=None):
                                 statuses.append(False)
                                 continue
 
+                            fc = np.mean(test_calibrations(rss, exp, check_mode='SCI',
+                                                   fallback_mode=config['imaging'].get('fallback_fluxcal')))
+
                             obstime = Time(rss[0].header['OBSTIME'])
 
                             tab = Table(rss['SLITMAP'].data)
@@ -4636,12 +4678,12 @@ def create_single_rss(config, w_dir=None):
                             fib_id = f"{exp:08d}_{trow['fiberid']:04d}"
                             if len(rec) > 0:
                                 tab_summary["sourceid"][rec[0]] = f'{tab_summary["sourceid"][rec[0]]}, {fib_id}'
-                                tab_summary["fluxcorr"][rec[0]] = f'{tab_summary["fluxcorr"][rec[0]]}, {cur_flux_corr[exp_id]}'
+                                tab_summary["fluxcorr"][rec[0]] = f'{tab_summary["fluxcorr"][rec[0]]}, {cur_flux_corr[exp_id] * fc}'
                                 tab_summary['vhel_corr'][rec[0]] = f'{tab_summary["vhel_corr"][rec[0]]}, {vcorr}'
                             else:
                                 tab_summary.add_row([len(tab_summary) + 1, ra_fib[trow_id], dec_fib[trow_id],
                                                      trow['targettype'], trow['fibstatus'], fib_id,
-                                                     str(cur_flux_corr[exp_id]), str(vcorr)])
+                                                     str(cur_flux_corr[exp_id]*fc), str(vcorr)])
             tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
             fix_permission(f_tab_summary)
             tab_summary = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
