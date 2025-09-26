@@ -106,6 +106,7 @@ dap_results_correspondence = {
     'OIII5007_p': 5006.84,
     "OII3727_p": 3726.03, "OII3729_p": 3728.82, "Hg_p": 4340.49,
     'OI_p': 6300.3,
+    'HeII_p': 4685.68, "NeIII3869_p": 3967.46, 'OIII4363_p': 4363.21, "NII5755_p": 5754.59, "SIII6312_p": 6312.06,
     "Ha": 'Halpha_6562.85', 'Hb': 'Hbeta_4861.36', 'SII6717': '[SII]_6716.44', "SII6731": '[SII]_6730.82',
     'NII6584': '[NII]_6583.45', 'SIII9532': '[SIII]_9531.1',
     'OIII5007': '[OIII]_5006.84',
@@ -3190,8 +3191,12 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 dap_config['lvmdap_dir'] = os.environ.get('LVM_DAP')
                 for kw in ['rsp-file', 'rsp-nl-file']:
                     dap_config[kw] = os.path.join(os.environ.get('LVM_DAP_RSP'),
-                                                          dap_config[kw].split('/')[-1])
-
+                                                          dap_config[kw].split(os.sep)[-1])
+                line_config_dir = os.path.join(os.environ.get('LVM_DAP'), '_legacy')
+                for kw in ['emission-lines-file', 'emission-lines-file-long', 'emission-lines-file-sky', 'mask-file',
+                           'config-file']:
+                    dap_config[kw] = os.path.join(line_config_dir,
+                                                  dap_config[kw].split(os.sep)[-1])
                 # save the new configuration file
                 with open(dap_config_file, 'w') as outfile:
                     yaml.dump(dap_config, outfile, default_flow_style=False)
@@ -3214,10 +3219,10 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
 
             continue
 
-        if cur_obj['name'] == 'Orion':
-            mean_bounds = (-2, 2)
-        else:
-            mean_bounds = (-10, 10)
+        # if cur_obj['name'] == 'Orion':
+        #     mean_bounds = (-2, 2)
+        # else:
+        mean_bounds = (-10, 10)
         vel = cur_obj.get('velocity')
 
         rss = fits.open(f_rss)
