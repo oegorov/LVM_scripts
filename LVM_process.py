@@ -2102,7 +2102,6 @@ def process_all_rss(config, w_dir=None):
                                                       ))
 
                         tab_summary = vstack([tab_summary, cur_table_summary])
-            return
             radec_compare = np.array([tab_summary['ra_round'], tab_summary['dec_round']]).T
             order = np.lexsort(radec_compare.T)
             radec_compare = radec_compare[order]
