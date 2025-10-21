@@ -50,6 +50,7 @@ ch.setLevel(logging.DEBUG)
 log.addHandler(ch)
 
 dap_ok = True
+drp_ok = True
 regions_ok = True
 try:
     from pyFIT3D.common.auto_ssp_tools import dump_rss_output
@@ -65,6 +66,37 @@ try:
 except ModuleNotFoundError:
     logging.error("LVMDAP is not installed. Please install it to use DAP fitting with this script."
                   "After that, make sure that you have numpy <= 1.23! Otherwise, it will not work.")
+
+try:
+    from lvmdrp.core.spectrum1d import convolution_matrix
+    log.info("Seems to be ok? I hope...")
+    print(convolution_matrix)
+
+    def lsf_convolve(data, diff_fwhm, errors=False):
+        """Degrade resolution of given spectrum
+        Modified version of lsf_convolve from lvmdrp package
+        """
+
+        new_data = data.copy()
+        sigmas = diff_fwhm / 2.354
+
+        # setup kernel
+        pixels = np.ceil(3 * max(sigmas))
+        pixels = np.arange(-pixels, pixels)
+        kernel = np.asarray([np.exp(-0.5 * (pixels / sigmas[iw]) ** 2) for iw in range(data.size)])
+        if errors:
+            kernel = convolution_matrix(kernel ** 2, normalize=False)
+        else:
+            kernel = convolution_matrix(kernel)
+        new_data = kernel @ data
+        return new_data
+
+except ModuleNotFoundError:
+    logging.error("LVMDRP is not installed properly. Some funcionalities will not work, including data reduction and "
+                  "convolution when combining the spectra")
+    drp_ok = False
+    def lsf_convolve(*args, **kwargs):
+        return args[0]
 
 try:
     from shapely.geometry import Polygon
@@ -100,6 +132,8 @@ drp_results_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'lvm', 's
 server_group_id = None  # ID of the group on the server to run 'chgrp' on all new/downloaded files. Skipped if None
 obs_loc = EarthLocation.of_site('lco')  # Observatory location
 fiber_d = 35.3 #diameter of the fiber in arcsec
+n_fib_per_block = 70000 # number of fibers per block in fits file for combining spectra into a single file
+                        # (less number -> less memory used, but slower processing)
 
 dap_results_correspondence = {
     "Ha_p": 6562.85, 'Hb_p': 4861.36, 'SII6717_p': 6716.44, "SII6731_p": 6730.82, 'NII6584_p': 6583.45, 'SIII9532_p': 9531.1,
@@ -107,15 +141,15 @@ dap_results_correspondence = {
     "OII3727_p": 3726.03, "OII3729_p": 3728.82, "Hg_p": 4340.49,
     'OI_p': 6300.3,
     'HeII_p': 4685.68, "NeIII3869_p": 3967.46, 'OIII4363_p': 4363.21, "NII5755_p": 5754.59, "SIII6312_p": 6312.06,
-    "Ha": 'Halpha_6562.85', 'Hb': 'Hbeta_4861.36', 'SII6717': '[SII]_6716.44', "SII6731": '[SII]_6730.82',
-    'NII6584': '[NII]_6583.45', 'SIII9532': '[SIII]_9531.1',
-    'OIII5007': '[OIII]_5006.84',
-    "OII3727": '[OII]_3726.03', "OII3729": '[OII]_3728.82', "Hg": 'Hgamma_4340.49',
-    'OI': '[OI]_6300.3', 'SIII6312': '[SIII]_6312.06',
-    "HeII": "HeII_4685.68",
-    "OIII4363": '[OIII]_4363.21', 'NII5755': '[NII]_5754.59',
-    'SII4068': '[SII]_4068.6', 'NeIII3869': '[NeIII]_3868.75',
-    'OII7320': '[OII]_7318.92', 'OII7330': '[OII]_7329.66', 'ArIII7136': '[ArIII]_7135.8',
+    "Ha_mom0": 'Halpha_6562.85', 'Hb_mom0': 'Hbeta_4861.36', 'SII6717_mom0': '[SII]_6716.44', "SII6731_mom0": '[SII]_6730.82',
+    'NII6584_mom0': '[NII]_6583.45', 'SIII9532_mom0': '[SIII]_9531.1',
+    'OIII5007_mom0': '[OIII]_5006.84',
+    "OII3727_mom0": '[OII]_3726.03', "OII3729_mom0": '[OII]_3728.82', "Hg_mom0": 'Hgamma_4340.49',
+    'OI_mom0': '[OI]_6300.3', 'SIII6312_mom0': '[SIII]_6312.06',
+    "HeII_mom0": "HeII_4685.68",
+    "OIII4363_mom0": '[OIII]_4363.21', 'NII5755_mom0': '[NII]_5754.59',
+    'SII4068_mom0': '[SII]_4068.6', 'NeIII3869_mom0': '[NeIII]_3868.75',
+    'OII7320_mom0': '[OII]_7318.92', 'OII7330_mom0': '[OII]_7329.66', 'ArIII7136_mom0': '[ArIII]_7135.8',
     # 'stpop_alpha': 'alpha', 'stpop_Av': 'Av', 'stpop_vel': 'sysvel', 'stpop_disp': 'disp',
     # 'stpop_mass': 'log_Mass', 'stpop_z': 'z'
 }
@@ -427,7 +461,8 @@ def LVM_process(config_filename=None, output_dir=None):
         if config['dap_fitting'].get('fit_mode') == 'rss':
             log.info("Analysing a single RSS file and measuring emission lines")
             if not config['dap_fitting'].get('skip_running_dap'):
-                status = process_single_rss(config, output_dir=cur_wdir, dap=True)
+                status = process_single_rss(config, output_dir=cur_wdir, dap=True,
+                                            testdap_prefix=config['dap_fitting'].get('testdap_prefix'))
                 if not status:
                     return
             else:
@@ -1802,7 +1837,6 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                     else:
                         vcorr = 0.
                         id_prefix = int(str(cur_table_fluxes[0]['id']).split('.')[0])
-                        #TODO: check vcorr for single RSS
 
                     cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy() #
                     cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
@@ -1846,11 +1880,15 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                              [kw + "_flux", kw + "_fluxerr", kw + "_vel",
                                                               kw + "_velerr", kw + "_disp", kw + "_disperr"])
                         else:
+                            if dap_results_correspondence[kw] not in cur_table_fluxes['wl']:
+                                log.warning(f"Line {kw} with wl={dap_results_correspondence[kw]} is not found "
+                                            f"in parametric DAP results. Skipping...")
+                                continue
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
                                                     'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
-                            if kw == 'OI':
-                                cur_table_summary['flux'] -= np.nanmedian(cur_table_summary['flux'])
+                            # if kw == 'OI':
+                            #     cur_table_summary['flux'] -= np.nanmedian(cur_table_summary['flux'])
                             cur_table_summary['flux'] *= cur_flux_corr[exp_id]
                             cur_table_summary['e_flux'] *= cur_flux_corr[exp_id]
                             cur_table_summary['vel'] += vcorr
@@ -1931,7 +1969,7 @@ def test_calibrations(rss, expnum, check_mode='SCI', fallback_mode='SCI'):
         fallback_mode = 'SCI'
     elif (type(fallback_mode) is bool and (not fallback_mode)):
         fallback_mode = cur_mode
-    if cur_mode is None:
+    if (cur_mode is None) or (cur_mode.lower() == 'none'):
         log.warning(f"Alternative flux calibrations are not accessible for {expnum} (FLUXCAL is not set)")
         return np.array([1.,1.,1.])
 
@@ -2620,10 +2658,18 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
                     continue
             else:
                 if f'{ln}_flux' in table_fluxes.colnames:
-                    values = np.vstack([values.T, table_fluxes[f'{ln}_flux'].T]).T #/ (np.pi * lvm_fiber_diameter ** 2 / 4)
+                    try:
+                        col_data = table_fluxes[f'{ln}_flux'].astype(float).filled(np.nan)
+                    except AttributeError:
+                        col_data = np.array(table_fluxes[f'{ln}_flux'])
+                    values = np.vstack([values.T, col_data.T]).T #/ (np.pi * lvm_fiber_diameter ** 2 / 4)
                     masks = np.vstack([masks.T, cur_masks.T]).T
                     if f'{ln}_fluxerr' in table_fluxes.colnames:
-                        values_errs = np.vstack([values_errs.T, table_fluxes[f'{ln}_fluxerr'].T]).T
+                        try:
+                            col_data = table_fluxes[f'{ln}_fluxerr'].astype(float).filled(np.nan)
+                        except AttributeError:
+                            col_data = np.array(table_fluxes[f'{ln}_fluxerr'])
+                        values_errs = np.vstack([values_errs.T, col_data.T]).T
                         masks_errs = np.vstack([masks_errs.T, cur_masks.T]).T
                 else:
                     continue
@@ -2632,9 +2678,17 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
                 names_out_errs.append(f'{ln}_fluxerr')
             for suff in ['vel', 'disp', 'cont']:
                 if f'{ln}_{suff}' in table_fluxes.colnames:
-                    values = np.vstack([values.T, table_fluxes[f'{ln}_{suff}'].T]).T
+                    try:
+                        col_data = table_fluxes[f'{ln}_{suff}'].astype(float).filled(np.nan)
+                    except AttributeError:
+                        col_data = np.array(table_fluxes[f'{ln}_{suff}'])
+                    values = np.vstack([values.T, col_data.T]).T
                     masks = np.vstack([masks.T, cur_masks.T]).T
-                    values_errs = np.vstack([values_errs.T, table_fluxes[f'{ln}_{suff}err'].T]).T
+                    try:
+                        col_data = table_fluxes[f'{ln}_{suff}err'].astype(float).filled(np.nan)
+                    except AttributeError:
+                        col_data = np.array(table_fluxes[f'{ln}_{suff}err'])
+                    values_errs = np.vstack([values_errs.T, col_data.T]).T
                     masks_errs = np.vstack([masks_errs.T, cur_masks.T]).T
                     names_out.append(f'{ln}_{suff}')
                     names_out_errs.append(f'{ln}_{suff}err')
@@ -2866,18 +2920,12 @@ def quickflux_single_rss(rsshdu, wrange, crange=None, selection=None, include_sk
 
     selwave_extended = (wave >= (min(wrange)-100)) * (wave <= (max(wrange)+100))
     wave = wave[selwave_extended]
-    if 'FLUX_ORIG' in rsshdu:
-        if include_sky:
-            flux_all = (rsshdu['FLUX_ORIG'].data + rsshdu['SKY'].data)[:, selwave_extended]
-        elif partial_sky:
-            flux_all = rsshdu['FLUX'].data[:, selwave_extended]
-        else:
-            flux_all = rsshdu["FLUX_ORIG"].data[:, selwave_extended]
+    if 'FLUX_SKYCORR' in rsshdu and partial_sky:
+        flux_all = rsshdu['FLUX'].data[:, selwave_extended]
+    elif include_sky:
+        flux_all = (rsshdu['FLUX'].data + rsshdu['SKY'].data)[:, selwave_extended]
     else:
-        if include_sky:
-            flux_all = (rsshdu['FLUX'].data + rsshdu['SKY'].data)[:, selwave_extended]
-        else:
-            flux_all = rsshdu['FLUX'].data[:, selwave_extended]
+        flux_all = rsshdu['FLUX'].data[:, selwave_extended]
     errors_all = rsshdu["IVAR"].data[:, selwave_extended]
     if 'MASK' in rsshdu:
         mask_all = rsshdu["MASK"].data[:, selwave_extended]
@@ -3046,13 +3094,15 @@ def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
     rss_out.close()
     fix_permission(f_rss_out)
 
-def process_single_rss(config, output_dir=None, binned=False, dap=False, extracted=False):
+def process_single_rss(config, output_dir=None, binned=False, dap=False, extracted=False, testdap_prefix=None):
     """
     Create table with fluxes from a single rss file
     :param config:
     :param output_dir:
     :return:
     """
+    if testdap_prefix is None:
+        testdap_prefix = ""
     if output_dir is None:
         output_dir = config.get('default_output_dir')
     if not output_dir:
@@ -3095,8 +3145,10 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             f_tab = os.path.join(output_dir, cur_obj['name'], version,
                                  f"{cur_obj.get('name')}_extracted.txt")
         else:
-            f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj['name']}_all_RSS.fits")
-            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj['name']}_fluxes_singleRSS.txt")
+            if testdap_prefix != "":
+                log.warning("Testing cutted version of the RSS file!!!")
+            f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{testdap_prefix}{cur_obj['name']}_all_RSS.fits")
+            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{testdap_prefix}{cur_obj['name']}_fluxes_singleRSS.txt")
         if not os.path.isfile(f_rss):
             log.error(f"File {f_rss} doesn't exist.")
             statuses.append(False)
@@ -3120,6 +3172,8 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 dap_output_dir = os.path.join(output_dir, cur_obj['name'], version,
                                               f"dap_output")
             label = f_rss.split('/')[-1].replace('.fits', '')
+            if testdap_prefix != "":
+                label = label.replace(testdap_prefix, "")
 
             if os.path.isdir(dap_output_dir) and os.path.exists(os.path.join(dap_output_dir, f'm_{label}.output.fits')):
                 log.warning("DAP results already exist. Skipping DAP running. "
@@ -3247,18 +3301,12 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
         dw = wave[1] - wave[0]
         selwave = (wave >= (6380*(vel / 3e5 + 1))) & (wave <= (6480*(vel / 3e5 + 1)))
         wave = wave[selwave]
-        if 'FLUX_ORIG' in rss:
-            if config['imaging'].get('include_sky'):
-                flux_all = (rss['FLUX_ORIG'].data + rss['SKY'].data)[:, selwave]
-            elif config['imaging'].get('partial_sky'):
-                flux_all = rss['FLUX'].data[:, selwave]
-            else:
-                flux_all = rss["FLUX_ORIG"].data[:, selwave]
+        if ('FLUX_SKYCORR' in rss) and config['imaging'].get('partial_sky'):
+            flux_all = rss['FLUX_SKYCORR'].data[:, selwave]
+        elif config['imaging'].get('include_sky'):
+            flux_all = (rss['FLUX'].data + rss['SKY'].data)[:, selwave]
         else:
-            if config['imaging'].get('include_sky'):
-                flux_all = (rss['FLUX'].data + rss['SKY'].data)[:, selwave]
-            else:
-                flux_all = rss["FLUX"].data[:, selwave]
+            flux_all = rss["FLUX"].data[:, selwave]
         if 'MASK' in rss:
             mask_all = rss["MASK"].data[:, selwave]
             flux_all[mask_all > 0] = np.nan
@@ -3351,25 +3399,16 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             local_statuses = []
             all_plot_data = []
 
-            if 'FLUX_ORIG' in rss:
-                if config['imaging'].get('include_sky'):
-                    flux = rss['FLUX_ORIG'].data + rss['SKY'].data
-                    flux[~np.isfinite(rss['FLUX_ORIG'].data) | (
-                                rss['FLUX_ORIG'].data == 0)] = np.nan
-                elif config['imaging'].get('partial_sky'):
-                    flux = rss['FLUX'].data
+            if ('FLUX_SKYCORR' in rss) and config['imaging'].get('partial_sky'):
+                    flux = rss['FLUX_SKYCORR'].data
                     flux[flux == 0] = np.nan
-                else:
-                    flux = rss['FLUX_ORIG'].data
-                    flux[flux == 0] = np.nan
+
+            elif config['imaging'].get('include_sky'):
+                flux = rss['FLUX'].data + rss['SKY'].data
+                flux[~np.isfinite(rss['FLUX'].data) | (rss['FLUX'].data == 0)] = np.nan
             else:
-                if config['imaging'].get('include_sky'):
-                    flux = rss['FLUX'].data + rss['SKY'].data
-                    flux[~np.isfinite(rss['FLUX'].data) | (
-                                rss['FLUX'].data == 0)] = np.nan
-                else:
-                    flux = rss['FLUX'].data
-                    flux[flux == 0] = np.nan
+                flux = rss['FLUX'].data
+                flux[flux == 0] = np.nan
             if mean_bounds is None:
                 mean_bounds = (-5, 5)
             sky = rss['SKY'].data
@@ -4548,6 +4587,9 @@ def create_single_rss(config, w_dir=None):
         return False
 
     statuses = []
+    precision_fiber = config['imaging'].get('fiber_pos_precision')
+    if not precision_fiber:
+        precision_fiber = 1.5
     for cur_obj in config['object']:
         if not cur_obj.get('version'):
             version = ''
@@ -4606,13 +4648,17 @@ def create_single_rss(config, w_dir=None):
 
         if config.get('load_fiberpos_table') and os.path.isfile(f_tab_summary):
             tab_summary = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
-                                     converters={'sourceid': str, 'fluxcorr': str, 'vhel_corr': str})
+                                     converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                                 'fluxcorr_z': str, 'vhel_corr': str, 'lsfcorr_b': str,
+                                                 'lsfcorr_r': str, 'lsfcorr_z': str})
             log.info(f"Table with fibers positions is loaded from {f_tab_summary}")
         else:
             tab_summary = Table(data=None,
                                 names=['fiberid', 'fib_ra', 'fib_dec', 'targettype',
-                                       'fibstatus', 'sourceid', 'fluxcorr', 'vhel_corr'],
-                                dtype=(int, float, float, str, int, 'object', 'object', 'object'))
+                                       'fibstatus', 'sourceid', 'fluxcorr_b', 'fluxcorr_r', 'fluxcorr_z',
+                                       'vhel_corr', 'lsfcorr_b', 'lsfcorr_r', 'lsfcorr_z'],
+                                dtype=(int, float, float, str, int, 'object', 'object', 'object', 'object', 'object',
+                                       'object', 'object', 'object'))
 
             for cur_pointing in cur_obj['pointing']:
                 for data in cur_pointing['data']:
@@ -4627,12 +4673,17 @@ def create_single_rss(config, w_dir=None):
                         ref_exp = None
 
                     if not data.get('flux_correction'):
-                        cur_flux_corr = [1.] * len(exps)
+                        cur_flux_corr_b = [1.] * len(exps)
+                        cur_flux_corr_r = [1.] * len(exps)
+                        cur_flux_corr_z = [1.] * len(exps)
                     else:
-                        cur_flux_corr = data['flux_correction']
-                    if isinstance(cur_flux_corr, float) or isinstance(cur_flux_corr, int):
-                        cur_flux_corr = [cur_flux_corr]
-                    # corrections.extend(cur_flux_corr)
+                        cur_flux_corr_b = data['flux_correction']
+                        cur_flux_corr_r = data['flux_correction']
+                        cur_flux_corr_z = data['flux_correction']
+                    if isinstance(cur_flux_corr_r, float) or isinstance(cur_flux_corr_r, int):
+                        cur_flux_corr_b = [cur_flux_corr_b]
+                        cur_flux_corr_r = [cur_flux_corr_r]
+                        cur_flux_corr_z = [cur_flux_corr_z]
 
                     for exp_id, exp in tqdm(enumerate(exps), total=len(exps), ascii=True,
                                             desc=f'Extraction fiber coordinates for pointing {cur_pointing["name"]}'):
@@ -4651,8 +4702,8 @@ def create_single_rss(config, w_dir=None):
                                 statuses.append(False)
                                 continue
 
-                            fc = np.mean(test_calibrations(rss, exp, check_mode='SCI',
-                                                   fallback_mode=config['imaging'].get('fallback_fluxcal')))
+                            fc_b, fc_r, fc_z = test_calibrations(rss, exp, check_mode='SCI',
+                                                                 fallback_mode=config['imaging'].get('fallback_fluxcal'))
 
                             obstime = Time(rss[0].header['OBSTIME'])
 
@@ -4664,6 +4715,8 @@ def create_single_rss(config, w_dir=None):
                         # kostyl for NGC6822
                         if exp == 3602:
                             ref_exp = 3601
+                            log.warning('Applied dedicated tweak for NGC6822, exp=3602 => ref_exp=3601. '
+                                        'Check the code if this was not intended anymore.')
                         radec_center = derive_radec_ifu(data['mjd'], exp, ref_exp,
                                                         objname=cur_obj['name'],
                                                         pointing_name=cur_pointing.get('name'), w_dir=cur_wdir)
@@ -4678,34 +4731,33 @@ def create_single_rss(config, w_dir=None):
                             cur_radec = radec_array[trow_id]
                             radec_tab = SkyCoord(ra=tab_summary['fib_ra'], dec=tab_summary['fib_dec'],
                                                  unit=('degree', 'degree'))
-                            rec = np.flatnonzero(radec_tab.separation(cur_radec) < (1.5 * u.arcsec))
+                            rec = np.flatnonzero(radec_tab.separation(cur_radec) < (precision_fiber * u.arcsec))
                             fib_id = f"{exp:08d}_{trow['fiberid']:04d}"
                             if len(rec) > 0:
                                 tab_summary["sourceid"][rec[0]] = f'{tab_summary["sourceid"][rec[0]]}, {fib_id}'
-                                tab_summary["fluxcorr"][rec[0]] = f'{tab_summary["fluxcorr"][rec[0]]}, {cur_flux_corr[exp_id] * fc}'
+                                tab_summary["fluxcorr_b"][rec[0]] = (f'{tab_summary["fluxcorr_b"][rec[0]]}, '
+                                                                   f'{cur_flux_corr_b[exp_id] * fc_b}')
+                                tab_summary["fluxcorr_r"][rec[0]] = (f'{tab_summary["fluxcorr_r"][rec[0]]}, '
+                                                                   f'{cur_flux_corr_r[exp_id] * fc_r}')
+                                tab_summary["fluxcorr_z"][rec[0]] = (f'{tab_summary["fluxcorr_z"][rec[0]]}, '
+                                                                   f'{cur_flux_corr_z[exp_id] * fc_z}')
                                 tab_summary['vhel_corr'][rec[0]] = f'{tab_summary["vhel_corr"][rec[0]]}, {vcorr}'
                             else:
                                 tab_summary.add_row([len(tab_summary) + 1, ra_fib[trow_id], dec_fib[trow_id],
                                                      trow['targettype'], trow['fibstatus'], fib_id,
-                                                     str(cur_flux_corr[exp_id]*fc), str(vcorr)])
+                                                     str(cur_flux_corr_b[exp_id]*fc_b),
+                                                     str(cur_flux_corr_r[exp_id]*fc_r),
+                                                     str(cur_flux_corr_z[exp_id]*fc_z),
+                                                     str(vcorr), '0.', '0.', '0.'])
             tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
             fix_permission(f_tab_summary)
             tab_summary = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
-                                     converters={'sourceid': str, 'fluxcorr': str, 'vhel_corr': str})
+                                     converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                                 'fluxcorr_z': str, 'vhel_corr': str, 'lsfcorr_b': str,
+                                                 'lsfcorr_r': str, 'lsfcorr_z': str})
             statuses.append(True)
 
         fout = os.path.join(cur_wdir, f"{cur_obj['name']}_all_RSS.fits")
-
-        # rss_out = fits.HDUList([fits.PrimaryHDU(data=None),
-        #                        fits.ImageHDU(data=np.zeros(shape=(len(tab_summary), nx), dtype=float), name='FLUX'),
-        #                        fits.ImageHDU(data=np.zeros(shape=(len(tab_summary), nx), dtype=float), name='ERROR'),
-        #                        fits.ImageHDU(data=np.zeros(shape=(len(tab_summary), nx), dtype=float), name='MASK'),
-        #                        fits.ImageHDU(data=np.zeros(shape=(nx), dtype=float), name='WAVE'),
-        #                        fits.ImageHDU(data=np.zeros(shape=(len(tab_summary), nx), dtype=float), name='FWHM'),
-        #                        fits.ImageHDU(data=np.zeros(shape=(len(tab_summary), nx), dtype=float), name='SKY'),
-        #                        fits.ImageHDU(data=np.zeros(shape=(len(tab_summary), nx), dtype=float), name='SKY_ERROR'),
-        #                        fits.ImageHDU(data=np.zeros(shape=(len(tab_summary), nx), dtype=float), name='FLUX_ORIG'),
-        #                        fits.BinTableHDU(data=tab_summary, name='SLITMAP')])
 
         if config.get('keep_existing_single_rss') and os.path.isfile(fout):
             log.info('...Consider existing RSS file as container')
@@ -4717,7 +4769,7 @@ def create_single_rss(config, w_dir=None):
             rss_out.writeto(fout, overwrite=True)
             rss_out.close()
             log.info('......FLUX and IVAR extensions are added')
-            for kw_block in [('MASK', 'WAVE', 'LSF'), ('SKY', 'SKY_IVAR', 'FLUX_ORIG')]:
+            for kw_block in [('MASK', 'WAVE', 'LSF'), ('SKY', 'SKY_IVAR', 'FLUX_SKYCORR')]:
                 rss_out = fits.open(fout)
                 for kw in kw_block:
                     if kw != 'WAVE':
@@ -4726,33 +4778,26 @@ def create_single_rss(config, w_dir=None):
                         shape = nx
                     rss_out.append(fits.ImageHDU(data=np.zeros(shape=shape, dtype=float), name=kw))
 
-                if kw == 'FLUX_ORIG':
+                if kw == 'FLUX_SKYCORR':
                     rss_out.append(fits.BinTableHDU(data=tab_summary, name='SLITMAP'))
                 rss_out.writeto(fout, overwrite=True)
                 rss_out.close()
                 log.info(f'......{",".join(kw_block)} extensions are added')
-                if kw == 'FLUX_ORIG':
+                if kw == 'FLUX_SKYCORR':
                     log.info('......SLITMAP extensions is added')
-            # rss_out = fits.open(fout)
 
-            # rss_out.writeto(fout, overwrite=True)
-            # rss_out.close()
-            # log.info(f'......SLITMAP extension is added')
-
-        # corrections = np.array(corrections)
         all_exps = np.array(all_exps)
         files = np.array(files)
 
-        n_fib_per_block = 70000
         rss_open = False
         for ind_row, cur_row in tqdm(enumerate(tab_summary), total=len(tab_summary), ascii=True, desc='Spectra done:'):
             if not rss_open:
                 rss_out = fits.open(fout)
                 rss_open = True
-                if ind_row == 0:
-                    rss_out['SLITMAP'] = fits.BinTableHDU(data=tab_summary, name='SLITMAP')
             source_ids = cur_row['sourceid'].split(',')
-            cur_corr_flux = np.array([float(corr) for corr in cur_row['fluxcorr'].split(',')]).astype(float)
+            cur_corr_flux_b = np.array([float(corr) for corr in cur_row['fluxcorr_b'].split(',')]).astype(float)
+            cur_corr_flux_r = np.array([float(corr) for corr in cur_row['fluxcorr_r'].split(',')]).astype(float)
+            cur_corr_flux_z = np.array([float(corr) for corr in cur_row['fluxcorr_z'].split(',')]).astype(float)
             cur_vhel_corr = np.array([float(corr) for corr in cur_row['vhel_corr'].split(',')]).astype(float)
             fs = [files[np.flatnonzero(all_exps == int(sid.split('_')[0]))[0]] for sid in source_ids]
             # cur_corr_flux = [corrections[np.flatnonzero(all_exps == int(sid.split('_')[0]))[0]] for sid in source_ids]
@@ -4768,35 +4813,47 @@ def create_single_rss(config, w_dir=None):
                     if ind_row == 0:
                         rss_out[0].header = hdu[0].header
                         ref_h_for_fsc = hdu['FLUX'].header.copy()
-                        ref_h_for_fsc['EXTNAME'] = 'FLUX_ORIG'
-                        rss_out['FLUX_ORIG'].header = ref_h_for_fsc
+                        ref_h_for_fsc['EXTNAME'] = 'FLUX_SKYCORR'
+                        rss_out['FLUX_SKYCORR'].header = ref_h_for_fsc
                         rss_out['WAVE'].data = hdu['WAVE'].data
                         rss_out['WAVE'].header = hdu['WAVE'].header
                     for kw in ['FLUX', 'IVAR', 'MASK', 'LSF', 'SKY', 'SKY_IVAR']:
                         if ind_row == 0:
                             rss_out[kw].header = hdu[kw].header
                         rss_out[kw].data[ind_row, :] = hdu[kw].data[spec_id, :]
-                    rss_out['FLUX_ORIG'].data[ind_row, :] = hdu['FLUX'].data[spec_id, :].copy()
-                    rss_out['FLUX'].data[ind_row, :] = (hdu['FLUX'].data[spec_id, :] + hdu['SKY'].data[spec_id, :]) - \
+                    rss_out['FLUX'].data[ind_row, :] = hdu['FLUX'].data[spec_id, :].copy()
+                    rss_out['FLUX_SKYCORR'].data[ind_row, :] = (hdu['FLUX'].data[spec_id, :] + hdu['SKY'].data[spec_id, :]) - \
                                                        mask_sky_at_bright_lines(hdu['SKY'].data[spec_id, :],
-                                                                                wave=wl_grid, vel=cur_obj['velocity'],
+                                                                                wave=wl_grid,
+                                                                                vel=cur_obj['velocity'] + cur_vhel_corr[0],
                                                                                 mask=hdu['MASK'].data[spec_id, :])
                     rec_bad = np.flatnonzero(
                         (hdu['FLUX'].data[spec_id, :] == 0) | ~np.isfinite(hdu['FLUX'].data[spec_id, :]) | (
                                     hdu['MASK'].data[spec_id, :] > 0))
-                    for kw in ['FLUX', 'IVAR', 'SKY', 'FLUX_ORIG', 'SKY_IVAR']:
-                        rss_out[kw].data[ind_row, :] = rss_out[kw].data[ind_row, :] * cur_corr_flux[0]
+                    rec_b = wl_grid < 5700
+                    rec_r = (wl_grid >= 5700) & (wl_grid < 7000)
+                    rec_z = wl_grid >= 7000
+                    for kw in ['FLUX', 'SKY', 'FLUX_SKYCORR']:
+                        rss_out[kw].data[ind_row, rec_b] = rss_out[kw].data[ind_row, rec_b] * float(cur_corr_flux_b[0])
+                        rss_out[kw].data[ind_row, rec_r] = rss_out[kw].data[ind_row, rec_r] * float(cur_corr_flux_r[0])
+                        rss_out[kw].data[ind_row, rec_z] = rss_out[kw].data[ind_row, rec_z] * float(cur_corr_flux_z[0])
+                    for kw in ['IVAR', 'SKY_IVAR']:
+                        rss_out[kw].data[ind_row, rec_b] = rss_out[kw].data[ind_row, rec_b] / (float(cur_corr_flux_b[0]) ** 2)
+                        rss_out[kw].data[ind_row, rec_r] = rss_out[kw].data[ind_row, rec_r] / (float(cur_corr_flux_r[0]) ** 2)
+                        rss_out[kw].data[ind_row, rec_z] = rss_out[kw].data[ind_row, rec_z] / (float(cur_corr_flux_z[0]) ** 2)
                     rss_out['FLUX'].data[ind_row, rec_bad] = np.nan
-                    rss_out['FLUX_ORIG'].data[ind_row, rec_bad] = np.nan
+                    rss_out['FLUX_SKYCORR'].data[ind_row, rec_bad] = np.nan
+                    rss_out['LSF'].data[ind_row, :] = hdu['LSF'].data[spec_id, :]
 
             elif len(source_ids) > 1:
                 # ===== Combine using sigma-clipping
                 fluxes = np.zeros(shape=(len(source_ids), nx), dtype=float)
-                errors = np.zeros(shape=(len(source_ids), nx), dtype=float)
+                ivars = np.zeros(shape=(len(source_ids), nx), dtype=float)
                 masks = np.zeros(shape=(nx), dtype=bool)
                 skies = np.zeros(shape=(len(source_ids), nx), dtype=float)
-                sky_errors = np.zeros(shape=(len(source_ids), nx), dtype=float)
+                sky_ivars = np.zeros(shape=(len(source_ids), nx), dtype=float)
                 fluxes_skycorr = np.zeros(shape=(len(source_ids), nx), dtype=float)
+                lsfs = np.zeros(shape=(len(source_ids), nx), dtype=float)
                 for f_id, f in enumerate(fs):
                     spec_id = sp_ids[f_id]
                     with fits.open(f) as hdu:
@@ -4804,12 +4861,16 @@ def create_single_rss(config, w_dir=None):
                             wl_grid = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
                                         hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] * 1e10 +
                                        hdu['FLUX'].header['CRVAL1'] * 1e10)
-                            rss_out['LSF'].data[ind_row, :] = hdu['LSF'].data[spec_id, :]
+                            wl_step = hdu['FLUX'].header['CDELT1'] * 1e10
+                            rec_b = wl_grid < 5700
+                            rec_r = (wl_grid >= 5700) & (wl_grid < 7000)
+                            rec_z = wl_grid >= 7000
+
                         if (ind_row == 0) & (f_id == 0):
                             rss_out[0].header = hdu[0].header
                             ref_h_for_fsc = hdu['FLUX'].header.copy()
-                            ref_h_for_fsc['EXTNAME'] = 'FLUX_ORIG'
-                            rss_out['FLUX_ORIG'].header = ref_h_for_fsc
+                            ref_h_for_fsc['EXTNAME'] = 'FLUX_SKYCORR'
+                            rss_out['FLUX_SKYCORR'].header = ref_h_for_fsc
                             rss_out['WAVE'].data = hdu['WAVE'].data
                             for kw in ['FLUX', 'IVAR', 'MASK', "WAVE", 'LSF', 'SKY', 'SKY_IVAR']:
                                 rss_out[kw].header = hdu[kw].header
@@ -4822,38 +4883,78 @@ def create_single_rss(config, w_dir=None):
                         rec_skycorr = np.flatnonzero(
                             hdu['MASK'].data[spec_id, :] | ~np.isfinite(hdu['SKY'].data[spec_id, :]) | ~np.isfinite(
                                 hdu['FLUX'].data[spec_id, :]) | (hdu['FLUX'].data[spec_id, :] == 0))
-                        fluxes[f_id, :] = hdu['FLUX'].data[spec_id, :] * cur_corr_flux[f_id]
-                        errors[f_id, :] = abs(hdu['IVAR'].data[spec_id, :]) / cur_corr_flux[f_id] ** 2
-                        skies[f_id, :] = hdu['SKY'].data[spec_id, :] * cur_corr_flux[f_id]
+
+                        fluxes[f_id, rec_b] = hdu['FLUX'].data[spec_id, rec_b] * float(cur_corr_flux_b[f_id])
+                        fluxes[f_id, rec_r] = hdu['FLUX'].data[spec_id, rec_r] * float(cur_corr_flux_r[f_id])
+                        fluxes[f_id, rec_z] = hdu['FLUX'].data[spec_id, rec_z] * float(cur_corr_flux_z[f_id])
+                        ivars[f_id, rec_b] = abs(hdu['IVAR'].data[spec_id, rec_b]) / (float(
+                            cur_corr_flux_b[f_id]) ** 2)
+                        ivars[f_id, rec_r] = abs(hdu['IVAR'].data[spec_id, rec_r]) / (float(
+                            cur_corr_flux_r[f_id]) ** 2)
+                        ivars[f_id, rec_z] = abs(hdu['IVAR'].data[spec_id, rec_z]) / (float(
+                            cur_corr_flux_z[f_id]) ** 2)
+                        skies[f_id, rec_b] = hdu['SKY'].data[spec_id, rec_b] * float(cur_corr_flux_b[f_id])
+                        skies[f_id, rec_r] = hdu['SKY'].data[spec_id, rec_r] * float(cur_corr_flux_r[f_id])
+                        skies[f_id, rec_z] = hdu['SKY'].data[spec_id, rec_z] * float(cur_corr_flux_z[f_id])
                         masks = masks | hdu['MASK'].data[spec_id, :]
-                        sky_errors[f_id, :] = hdu['SKY_IVAR'].data[spec_id, :] / cur_corr_flux[f_id] ** 2
-                        fluxes_skycorr[f_id, :] = ((hdu['FLUX'].data[spec_id, :] + hdu['SKY'].data[spec_id, :]) -
+                        sky_ivars[f_id, rec_b] = hdu['SKY_IVAR'].data[spec_id, rec_b] / float(
+                            cur_corr_flux_b[f_id] ** 2)
+                        sky_ivars[f_id, rec_r] = hdu['SKY_IVAR'].data[spec_id, rec_r] / float(
+                            cur_corr_flux_r[f_id] ** 2)
+                        sky_ivars[f_id, rec_z] = hdu['SKY_IVAR'].data[spec_id, rec_z] / float(
+                            cur_corr_flux_z[f_id] ** 2)
+                        fluxes_skycorr[f_id,:] = ((hdu['FLUX'].data[spec_id, :] + hdu['SKY'].data[spec_id, :]) -
                                                    mask_sky_at_bright_lines(hdu['SKY'].data[spec_id, :], wave=wl_grid,
-                                                                            vel=cur_obj['velocity'],
-                                                                            mask=hdu['MASK'].data[spec_id, :])) * \
-                                                  cur_corr_flux[f_id]
+                                                                            vel=cur_obj['velocity']+ cur_vhel_corr[f_id],
+                                                                            mask=hdu['MASK'].data[spec_id, :]))
+                        fluxes_skycorr[f_id, rec_b] *= float(cur_corr_flux_b[f_id])
+                        fluxes_skycorr[f_id, rec_r] *= float(cur_corr_flux_r[f_id])
+                        fluxes_skycorr[f_id, rec_z] *= float(cur_corr_flux_z[f_id])
                         fluxes[f_id, rec] = np.nan
                         fluxes_skycorr[f_id, rec_skycorr] = np.nan
                         skies[f_id, rec_sky] = np.nan
 
-                # rec_test_wl = np.flatnonzero((rss_out['WAVE'].data > 5900) & (rss_out['WAVE'].data < 6200))
-                # cont_err = np.nanstd(fluxes_skycorr[:,rec_test_wl], axis=1)
-                # cont_err = np.round(cont_err/np.nanmedian(cont_err),2)
-                #
-                # fluxes = fluxes / cont_err[:, None]
-                # fluxes_skycorr = fluxes_skycorr / cont_err[:, None]
-                # skies = skies / cont_err[:, None]
-                # errors = errors / cont_err[:, None]
-                # sky_errors = sky_errors / cont_err[:, None]
+                        lsfs[f_id, :] = hdu['LSF'].data[spec_id, :]
 
-                rss_out['FLUX'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes_skycorr, sigma=1.3, axis=0, masked=False), axis=0)
-                rss_out['FLUX_ORIG'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes, sigma=1.3, axis=0, masked=False), axis=0)
+                lsf_fin = np.nanmax(lsfs, axis=0)
+                lsf_corr = np.sqrt(lsf_fin[None, :] ** 2 - lsfs ** 2) / wl_step
+
+                ave_vhel = np.mean(cur_vhel_corr)
+                for f_id in range(len(source_ids)):
+                    if np.max(lsf_corr[f_id, :]) > 0.2:
+                        fluxes[f_id, :] = lsf_convolve(fluxes[f_id, :], lsf_corr[f_id, :])
+                        fluxes_skycorr[f_id, :] = lsf_convolve(fluxes_skycorr[f_id, :], lsf_corr[f_id, :])
+                        skies[f_id, :] = lsf_convolve(skies[f_id, :], lsf_corr[f_id, :])
+                        ivars[f_id, :] = 1/lsf_convolve(1/ivars[f_id, :], lsf_corr[f_id, :], errors=True)
+                        sky_ivars[f_id, :] = 1 / lsf_convolve(1 / sky_ivars[f_id, :], lsf_corr[f_id, :], errors=True)
+
+                    # Apply velocity correction
+                    delta_v = cur_vhel_corr[f_id] - ave_vhel
+                    if delta_v > 2.:
+                        fluxes[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 3e5),
+                                                   fluxes[f_id, :])
+                        fluxes_skycorr[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 3e5),
+                                                            fluxes_skycorr[f_id, :])
+                        ivars[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 3e5),
+                                                            ivars[f_id, :])
+
+                lsf_corr_b = ",".join(np.round(np.nanmedian(lsf_corr[:, rec_b]*wl_step, axis=1),2).astype(str))
+                lsf_corr_r = ",".join(np.round(np.nanmedian(lsf_corr[:, rec_r]*wl_step, axis=1),2).astype(str))
+                lsf_corr_z = ",".join(np.round(np.nanmedian(lsf_corr[:, rec_z]*wl_step, axis=1),2).astype(str))
+                tab_summary['lsfcorr_b'][ind_row] = lsf_corr_b
+                tab_summary['lsfcorr_r'][ind_row] = lsf_corr_r
+                tab_summary['lsfcorr_z'][ind_row] = lsf_corr_z
+
+                rss_out['FLUX_SKYCORR'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes_skycorr, sigma=1.3, axis=0, masked=False), axis=0)
+                rss_out['FLUX'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes, sigma=1.3, axis=0, masked=False), axis=0)
                 rss_out['MASK'].data[ind_row, :] = masks
-                rss_out['IVAR'].data[ind_row, :] = 1/(np.nansum(1/errors, axis=0)/np.sum(np.isfinite(errors),axis=0)**2)
+                rss_out['IVAR'].data[ind_row, :] = 1/(np.nansum(1/ivars, axis=0)/np.sum(np.isfinite(ivars),axis=0)**2)
                 rss_out['SKY'].data[ind_row, :] = np.nansum(skies, axis=0)/np.sum(np.isfinite(skies),axis=0)
-                rss_out['SKY_IVAR'].data[ind_row, :] = 1/(np.nansum(1/sky_errors, axis=0)/np.sum(np.isfinite(sky_errors),axis=0)**2)
-
+                rss_out['SKY_IVAR'].data[ind_row, :] = 1/(np.nansum(1/sky_ivars, axis=0)/np.sum(np.isfinite(sky_ivars),axis=0)**2)
+                rss_out['LSF'].data[ind_row, :] = lsf_fin
             if ((ind_row+1) % n_fib_per_block == 0) or (ind_row == (len(tab_summary)-1)):
+                if ind_row == (len(tab_summary)-1):
+                    rss_out['SLITMAP'] = fits.BinTableHDU(data=tab_summary, name='SLITMAP')
                 rss_out.writeto(fout, overwrite=True)
                 rss_out.close()
                 rss_open = False
@@ -5052,3 +5153,5 @@ if __name__ == "__main__":
         else:
             output_dir = args[2]
         LVM_process(config_filename=config_file, output_dir=output_dir)
+
+        log.info(f"LVM processing of {config_file} config file is complete.")
