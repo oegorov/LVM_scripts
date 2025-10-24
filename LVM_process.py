@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import yaml
-from fontTools.misc.cython import returns
 from sdss_access import RsyncAccess
 
 try:
@@ -37,11 +36,10 @@ from matplotlib.backends.backend_pdf import PdfPages
 import warnings
 from astropy.utils.exceptions import AstropyWarning, AstropyUserWarning
 
-from argparse import Namespace
-
 warnings.simplefilter('ignore', UserWarning)
 warnings.simplefilter('ignore', AstropyWarning)
 warnings.simplefilter('ignore', AstropyUserWarning)
+warnings.filterwarnings("ignore", message="error 128 while getting commit hash")
 
 log = logging.getLogger(name='LVM-process')
 log.setLevel(logging.DEBUG)
@@ -69,15 +67,12 @@ except ModuleNotFoundError:
 
 try:
     from lvmdrp.core.spectrum1d import convolution_matrix
-    log.info("Seems to be ok? I hope...")
     print(convolution_matrix)
 
     def lsf_convolve(data, diff_fwhm, errors=False):
         """Degrade resolution of given spectrum
         Modified version of lsf_convolve from lvmdrp package
         """
-
-        new_data = data.copy()
         sigmas = diff_fwhm / 2.354
 
         # setup kernel
@@ -134,6 +129,7 @@ obs_loc = EarthLocation.of_site('lco')  # Observatory location
 fiber_d = 35.3 #diameter of the fiber in arcsec
 n_fib_per_block = 70000 # number of fibers per block in fits file for combining spectra into a single file
                         # (less number -> less memory used, but slower processing)
+sigma_clip_value = 2.5 # threshold for sigma clip for combining spectra
 
 dap_results_correspondence = {
     "Ha_p": 6562.85, 'Hb_p': 4861.36, 'SII6717_p': 6716.44, "SII6731_p": 6730.82, 'NII6584_p': 6583.45, 'SIII9532_p': 9531.1,
@@ -608,6 +604,8 @@ def create_folders_tree(config, w_dir=None):
         log.error("Something wrong with creation of the work folders tree:" + str(e))
         status = False
     return status
+
+
 def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10., 10.),
                        ax=None, return_plot_data=False, subtract_lsf=True, max_n_comp=None, tie_disp=None, tie_vel=None):
     """
@@ -2819,9 +2817,11 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
             vhel = float(np.nanmean(vhel_corr))
         wave = ((np.arange(header['NAXIS1']) - header['CRPIX1'] + 1) * header['CDELT1'] + header['CRVAL1'])
     error = 1./np.sqrt(ivar)
-    sky_error = 1./np.sqrt(sky_ivar)
     error[~np.isfinite(error)] = 1e10
-    sky_error[~np.isfinite(sky_error)] = 1e10
+
+    if sky is not None and np.isfinite(sky).any():
+        sky_error = 1. / np.sqrt(sky_ivar)
+        sky_error[~np.isfinite(sky_error)] = 1e10
 
     res_output = {}
     all_plot_data = []
@@ -2830,25 +2830,27 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
     wid = 10
     vel_sky_correct = 0
     mean_bounds_1 =np.array(mean_bounds)
-    for sky_line in [5577.338, 6300.304]:
-        sel_wave = np.flatnonzero((wave >= (sky_line - wid)) & (wave <= (sky_line + wid)))
-        (fluxes, vel, disp, cont, fluxes_err, v_err,
-         sigma_err, cont_err, _, _) = fit_cur_spec_lmfit((sky[sel_wave], sky_error[sel_wave], lsf[sel_wave]),
-                                             wave=wave[sel_wave],
-                                             mean_bounds=(-1.5, 1.5),
-                                             lines=[float(sky_line)],
-                                             velocity=0, return_plot_data=False, subtract_lsf=False)
 
-        res_output[f'SKY{int(sky_line)}_flux'] = fluxes[0]
-        res_output[f'SKY{int(sky_line)}_fluxerr'] = fluxes_err[0]
-        res_output[f'SKY{int(sky_line)}_vel'] = vel[0]
-        res_output[f'SKY{int(sky_line)}_velerr'] = v_err[0]
-        res_output[f'SKY{int(sky_line)}_disp'] = disp[0]
-        res_output[f'SKY{int(sky_line)}_disperr'] = sigma_err[0]
-        res_output[f'SKY{int(sky_line)}_cont'] = cont[0]
-        res_output[f'SKY{int(sky_line)}_conterr'] = cont_err[0]
-        # if int(np.round(sky_line)) == 6300:
-        #     vel_sky_correct = vel
+    if sky is not None and np.isfinite(sky).any():
+        for sky_line in [5577.338, 6300.304]:
+            sel_wave = np.flatnonzero((wave >= (sky_line - wid)) & (wave <= (sky_line + wid)))
+            (fluxes, vel, disp, cont, fluxes_err, v_err,
+             sigma_err, cont_err, _, _) = fit_cur_spec_lmfit((sky[sel_wave], sky_error[sel_wave], lsf[sel_wave]),
+                                                 wave=wave[sel_wave],
+                                                 mean_bounds=(-1.5, 1.5),
+                                                 lines=[float(sky_line)],
+                                                 velocity=0, return_plot_data=False, subtract_lsf=False)
+
+            res_output[f'SKY{int(sky_line)}_flux'] = fluxes[0]
+            res_output[f'SKY{int(sky_line)}_fluxerr'] = fluxes_err[0]
+            res_output[f'SKY{int(sky_line)}_vel'] = vel[0]
+            res_output[f'SKY{int(sky_line)}_velerr'] = v_err[0]
+            res_output[f'SKY{int(sky_line)}_disp'] = disp[0]
+            res_output[f'SKY{int(sky_line)}_disperr'] = sigma_err[0]
+            res_output[f'SKY{int(sky_line)}_cont'] = cont[0]
+            res_output[f'SKY{int(sky_line)}_conterr'] = cont_err[0]
+            # if int(np.round(sky_line)) == 6300:
+            #     vel_sky_correct = vel
 
     for cur_line_params in line_fit_params:
         (line_name, wl_range, mask_wl, line_fit,
@@ -3094,6 +3096,7 @@ def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
     rss_out.close()
     fix_permission(f_rss_out)
 
+
 def process_single_rss(config, output_dir=None, binned=False, dap=False, extracted=False, testdap_prefix=None):
     """
     Create table with fluxes from a single rss file
@@ -3278,6 +3281,12 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
         mean_bounds = (-10, 10)
         vel = cur_obj.get('velocity')
 
+        f_rss_emis_check = f_rss.replace('.fits', '_emis.fits')
+        if os.path.isfile(f_rss_emis_check):
+            f_rss = f_rss_emis_check
+            log.warning(f"Found star-subtracted RSS file {os.path.basename(f_rss_emis_check)}. "
+                        f"Continue using this file. Move/delete it if this was unintended!")
+
         rss = fits.open(f_rss)
         table_fibers = Table(rss['SLITMAP'].data)
 
@@ -3411,10 +3420,14 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 flux[flux == 0] = np.nan
             if mean_bounds is None:
                 mean_bounds = (-5, 5)
-            sky = rss['SKY'].data
-            sky_ivar = rss['SKY_IVAR'].data
-            if 'MASK' in rss:
-                sky[(rss['MASK'].data > 0) ] = np.nan #| (rss['SKY'].data == 0)
+            if 'SKY' in rss:
+                sky = rss['SKY'].data
+                sky_ivar = rss['SKY_IVAR'].data
+                if 'MASK' in rss:
+                    sky[(rss['MASK'].data > 0) ] = np.nan #| (rss['SKY'].data == 0)
+            else:
+                sky = flux * np.nan
+                sky_ivar = flux * np.nan
             ivar = rss['IVAR'].data
             lsf = rss['LSF'].data
             if 'MASK' in rss:
@@ -4107,7 +4120,7 @@ def extract_spectrum_for_cur_fiber(params):
         warnings.filterwarnings(
             "ignore",
         )
-        flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
+        flux = np.nanmean(sigma_clip(flux, sigma=sigma_clip_value, axis=0, masked=False), axis=0)
         ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0) ** 2)
         sky = np.nansum(sky, axis=0) / np.sum(np.isfinite(sky), axis=0)
         sky_ivar = 1 / (np.nansum(1 / sky_ivar, axis=0) / np.sum(np.isfinite(sky_ivar), axis=0) ** 2)
@@ -4267,7 +4280,7 @@ def reconstruct_cube(config, w_dir=None):
                         warnings.filterwarnings(
                             "ignore",
                         )
-                        cur_fluxes = np.nanmean(sigma_clip(cur_fluxes, sigma=1.3, axis=0, masked=False), axis=0)
+                        cur_fluxes = np.nanmean(sigma_clip(cur_fluxes, sigma=sigma_clip_value, axis=0, masked=False), axis=0)
             if fluxes is None:
                 fluxes = cur_fluxes
             else:
@@ -4945,8 +4958,8 @@ def create_single_rss(config, w_dir=None):
                 tab_summary['lsfcorr_r'][ind_row] = lsf_corr_r
                 tab_summary['lsfcorr_z'][ind_row] = lsf_corr_z
 
-                rss_out['FLUX_SKYCORR'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes_skycorr, sigma=1.3, axis=0, masked=False), axis=0)
-                rss_out['FLUX'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes, sigma=1.3, axis=0, masked=False), axis=0)
+                rss_out['FLUX_SKYCORR'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes_skycorr, sigma=sigma_clip_value, axis=0, masked=False), axis=0)
+                rss_out['FLUX'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes, sigma=sigma_clip_value, axis=0, masked=False), axis=0)
                 rss_out['MASK'].data[ind_row, :] = masks
                 rss_out['IVAR'].data[ind_row, :] = 1/(np.nansum(1/ivars, axis=0)/np.sum(np.isfinite(ivars),axis=0)**2)
                 rss_out['SKY'].data[ind_row, :] = np.nansum(skies, axis=0)/np.sum(np.isfinite(skies),axis=0)
