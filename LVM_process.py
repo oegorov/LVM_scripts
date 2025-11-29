@@ -120,7 +120,7 @@ except ModuleNotFoundError:
 # ========================
 red_data_version = '1.1.1'
 dap_version = '1.1.0'
-drp_version = '1.1.1dev'
+drp_version = '1.2.0'
 # os.environ['LVMDRP_VERSION'] = drp_version
 agcam_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'agcam', 'lco')
 raw_data_dir = os.path.join(os.environ['SAS_BASE_DIR'], 'sdsswork', 'data', 'lvm', 'lco')
@@ -134,6 +134,7 @@ fiber_d = 35.3 #diameter of the fiber in arcsec
 n_fib_per_block = 70000 # number of fibers per block in fits file for combining spectra into a single file
                         # (less number -> less memory used, but slower processing)
 sigma_clip_value = 2.5 # threshold for sigma clip for combining spectra
+mean_bounds_fitline = (-30, 30) # mean velocity bounds for fitting lines
 
 dap_results_correspondence = {
     "Ha_p": 6562.85, 'Hb_p': 4861.36, 'SII6717_p': 6716.44, "SII6731_p": 6730.82, 'NII6584_p': 6583.45, 'SIII9532_p': 9531.1,
@@ -697,14 +698,14 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
                 elif cmp > 0:
                     l0 = res.params[f'gaus{l_id}0_center'].value
                     if l0 is None or ~np.isfinite(l0):
-                        l0 = l*(1+velocity/3e5)
+                        l0 = l*(1+velocity/2.998e5)
                     pars[f"gaus{l_id}{cmp}_center"].set(value=l0,
                                                         min=l0 - 3.,
                                                         max=l0 + 3., vary=True)
                 else:
-                    pars[f"gaus{l_id}{cmp}_center"].set(value=l*(1+velocity/3e5),
-                                                        min=l*(1+velocity/3e5)+mean_bounds[0],
-                                                        max=l*(1+velocity/3e5)+mean_bounds[1], vary=True)
+                    pars[f"gaus{l_id}{cmp}_center"].set(value=l*(1+velocity/2.998e5),
+                                                        min=l*(1+velocity/2.998e5)+mean_bounds[0],
+                                                        max=l*(1+velocity/2.998e5)+mean_bounds[1], vary=True)
 
                 if (cmp == 0) and (l_id>min_lid_tie_disp) and tie_disp[l_id]:
                     pars[f"gaus{l_id}{cmp}_sigma"].set(expr=f'gaus{min_lid_tie_disp}0_sigma')
@@ -747,13 +748,13 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
             continue
         else:
             if not subtract_lsf:
-                disp = [np.array(res.params[f'gaus{l_id}{0}_sigma'].value).astype(float)/lines[l_id]*3e5 for l_id in range(len(lines))]
+                disp = [np.array(res.params[f'gaus{l_id}{0}_sigma'].value).astype(float)/lines[l_id]*2.998e5 for l_id in range(len(lines))]
             else:
-                disp = [np.sqrt(np.array(res.params[f'gaus{l_id}{0}_sigma'].value).astype(float)**2 - mean_std**2)/ lines[l_id] * 3e5 for l_id in range(len(lines))]
+                disp = [np.sqrt(np.array(res.params[f'gaus{l_id}{0}_sigma'].value).astype(float)**2 - mean_std**2)/ lines[l_id] * 2.998e5 for l_id in range(len(lines))]
 
-            disp_err = [(np.array(res.params[f'gaus{l_id}{0}_sigma'].stderr).astype(float) / lines[l_id]) * 3e5 for l_id in range(len(lines))]
-            vel = [(np.array(res.params[f'gaus{l_id}{0}_center'].value).astype(float) / lines[l_id] - 1) * 3e5 for l_id in range(len(lines))]
-            vel_err = [(np.array(res.params[f'gaus{l_id}{0}_center'].stderr).astype(float) / lines[l_id]) * 3e5 for l_id in range(len(lines))]
+            disp_err = [(np.array(res.params[f'gaus{l_id}{0}_sigma'].stderr).astype(float) / lines[l_id]) * 2.998e5 for l_id in range(len(lines))]
+            vel = [(np.array(res.params[f'gaus{l_id}{0}_center'].value).astype(float) / lines[l_id] - 1) * 2.998e5 for l_id in range(len(lines))]
+            vel_err = [(np.array(res.params[f'gaus{l_id}{0}_center'].stderr).astype(float) / lines[l_id]) * 2.998e5 for l_id in range(len(lines))]
             fluxes = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2 for l_id in range(len(lines))]
             fluxes_err = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].stderr).astype(float)*1e-16/np.pi/(fiber_d/2)**2 for l_id in range(len(lines))]
             cont = [np.array(res.params[f'contin_c'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2]*len(lines)
@@ -784,13 +785,13 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
                 rec = np.flatnonzero(cur_n_comps == (ind+2))
                 for l_id in rec:
                     if not subtract_lsf:
-                        other_comps[ind]['disp'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].value).astype(float)/lines[l_id]*3e5
+                        other_comps[ind]['disp'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].value).astype(float)/lines[l_id]*2.998e5
                     else:
-                        other_comps[ind]['disp'][l_id] = np.sqrt(np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].value).astype(float)**2-mean_std**2)/ lines[l_id] * 3e5
-                    other_comps[ind]['disp_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].stderr).astype(float) / lines[l_id]) * 3e5
+                        other_comps[ind]['disp'][l_id] = np.sqrt(np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].value).astype(float)**2-mean_std**2)/ lines[l_id] * 2.998e5
+                    other_comps[ind]['disp_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].stderr).astype(float) / lines[l_id]) * 2.998e5
 
-                    other_comps[ind]['vel'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_center'].value).astype(float) / lines[l_id] - 1) * 3e5
-                    other_comps[ind]['vel_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_center'].stderr).astype(float) / lines[l_id]) * 3e5
+                    other_comps[ind]['vel'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_center'].value).astype(float) / lines[l_id] - 1) * 2.998e5
+                    other_comps[ind]['vel_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_center'].stderr).astype(float) / lines[l_id]) * 2.998e5
                     other_comps[ind]['fluxes'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_amplitude'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2
                     other_comps[ind]['fluxes_err'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_amplitude'].stderr).astype(float)*1e-16/np.pi/(fiber_d/2)**2
 
@@ -823,130 +824,6 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
         return fluxes, vel, disp, cont, fluxes_err, vel_err, disp_err, cont_err, other_comps[0], other_comps[1], plot_data
     else:
         return fluxes, vel, disp, cont, fluxes_err, vel_err, disp_err, cont_err, other_comps[0], other_comps[1],
-
-
-def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10., 10.),
-                 ax=None, return_plot_data=False, subtract_lsf=True, multicomp=False):
-    spectrum, errors, lsf = data
-    rec = np.flatnonzero(np.isfinite(spectrum) & (spectrum != 0) &
-                         np.isfinite(errors) & (np.isfinite(lsf)) & (lsf > 0) & np.isfinite(wave))  # & (errors > 0)
-    if len(rec) < 10:
-        if return_plot_data:
-            return [np.nan]*len(lines), [np.nan]*len(lines), [np.nan]*len(lines), np.nan, [np.nan]*len(lines), np.nan, np.nan, np.nan, None
-        else:
-            return [np.nan] * len(lines), [np.nan]*len(lines), [np.nan]*len(lines), np.nan, [np.nan] * len(lines), np.nan, np.nan, np.nan
-
-    spectrum = spectrum[rec]
-    errors = errors[rec]
-    lsf = lsf[rec]
-    wave = wave[rec]
-    fitter = fitting.LevMarLSQFitter(calc_uncertainties=True)
-    g_init = None
-    cont = np.nanmin(spectrum)
-    max_ampl = np.nanmax(spectrum) - cont
-    gaussians = {}
-    mean_std = np.nanmedian(lsf/2.35428)
-    for l_id, l in enumerate(lines):
-        gaussians[l_id] = models.Gaussian1D(stddev=mean_std, amplitude=max_ampl, mean=l*(1+velocity/3e5))
-        gaussians[l_id].amplitude.bounds = (0, 1.1*abs(max_ampl))
-        gaussians[l_id].stddev.bounds = (mean_std*0.6, mean_std*5.)
-        if mean_bounds is not None:
-            gaussians[l_id].mean.bounds = (l+mean_bounds[0], l+mean_bounds[1])
-        if g_init is None:
-            g_init = gaussians[l_id]
-        else:
-            g_init += gaussians[l_id]
-
-    nz = len(spectrum)
-    rec_spec_cont = (wave < wave[int(nz / 3) + 1]) | (wave > wave[int(2 * nz / 3) + 1])
-    spec_cont = spectrum[rec_spec_cont]
-    const_model = models.Const1D(np.nanmedian(spec_cont))
-    g_init += const_model
-
-    def tie_std(model):
-        return model.stddev_0
-
-    l_id = 1
-    if len(lines) > 1:
-        if not multicomp:
-            t1 = lambda model: (model.mean_0 * lines[1]/lines[0])
-            gaussians[l_id].mean.tied = t1
-            gaussians[l_id].stddev.tied = tie_std
-        l_id += 1
-    if len(lines) > 2:
-        if not multicomp:
-            t2 = lambda model: (model.mean_0 * lines[2] / lines[0])
-            gaussians[l_id].mean.tied = t2
-            gaussians[l_id].stddev.tied = tie_std
-        l_id += 1
-    if len(lines) > 3:
-        if not multicomp:
-            t3 = lambda model: (model.mean_0 * lines[3] / lines[0])
-            gaussians[l_id].mean.tied = t3
-            gaussians[l_id].stddev.tied = tie_std
-
-    if fix_ratios is not None:
-        ref_id = np.flatnonzero(np.array(fix_ratios)==1)[0]
-        for fr_id, fr in enumerate(fix_ratios):
-            if fr != 1 and fr > 0:
-                gaussians[fr_id].amplitude.tied = lambda model: (model.__getattr__(f'amplitude_{ref_id}') * fr)
-    # const_model.amplitude.fixed = True
-
-    try:
-        weights = 1./(np.abs(errors))
-        # p = interp1d(wave, spectrum, bounds_error=False)
-        # p_w = interp1d(wave, weights, bounds_error=False)
-        # wave_oversampled = np.linspace(wave[0], wave[-1], len(wave)*10)
-        # spectrum_oversampled = p(wave_oversampled)
-        # weights_oversampled = p_w(wave_oversampled)
-        res = fitter(g_init, wave, spectrum, weights=weights)
-    except fitting.NonFiniteValueError:
-        if return_plot_data:
-            return [np.nan]*len(lines), np.nan, np.nan, np.nan, [np.nan]*len(lines), np.nan, np.nan, np.nan, None
-        else:
-            return [np.nan] * len(lines), np.nan, np.nan, np.nan, [np.nan] * len(lines), np.nan, np.nan, np.nan
-    if multicomp:
-        vel = [(res.__getattr__(f"mean_{l_id}")/lines[0]-1)*3e5 for l_id in range(len(lines))]
-    else:
-        vel = [(res.__getattr__(f"mean_{l_id}") / lines[l_id] - 1) * 3e5 for l_id in range(len(lines))]
-
-    if not subtract_lsf:
-        if multicomp:
-            disp = [(res.__getattr__(f"stddev_{l_id}")  / lines[0] * 3e5) for l_id in range(len(lines))]
-        else:
-            disp = [(res.__getattr__(f"stddev_{l_id}") / lines[l_id] * 3e5) for l_id in range(len(lines))]
-    else:
-        if multicomp:
-            disp = [(np.sqrt(res.__getattr__(f"stddev_{l_id}") ** 2 - mean_std ** 2) / lines[0] * 3e5) for l_id in range(len(lines))]
-        else:
-            disp = [(np.sqrt(res.__getattr__(f"stddev_{l_id}") ** 2 - mean_std ** 2) / lines[l_id] * 3e5) for l_id in range(len(lines))]
-
-    cont = res.__getattr__(f"amplitude_{len(lines)}").value
-    fluxes = [res.__getattr__(f"amplitude_{l_id}")*res.__getattr__(f"stddev_{l_id}")*np.sqrt(2 * np.pi) for l_id in range(len(lines))]
-    if fitter.fit_info['param_cov'] is None:
-        cov_diag = np.zeros(shape=(len(lines)+3,), dtype=float)
-        cov_diag[:] = np.nan
-    else:
-        cov_diag = np.diag(fitter.fit_info['param_cov'])
-    fluxes_err = [np.sqrt(cov_diag[0]*res.stddev_0**2 + res.__getattr__(f"amplitude_{0}")**2 * cov_diag[2]) * np.sqrt(2 * np.pi)]
-    if len(lines)>1:
-        for l_id in range(len(lines)-1):
-            fluxes_err.append(np.sqrt(
-                cov_diag[3+l_id] * res.__getattr__(f"stddev_{l_id}") ** 2 + res.__getattr__(f"amplitude_{l_id+1}") ** 2 * cov_diag[2]) * np.sqrt(
-                2 * np.pi))
-    v_err = np.sqrt(cov_diag[1])/lines[0]*3e5
-    sigma_err = np.sqrt(cov_diag[2]) / lines[0] * 3e5
-    cont_err = np.sqrt(cov_diag[-1])
-
-    if ax is not None:
-        ax.plot(wave, spectrum, 'k-', label='Obs')
-        ax.plot(wave, res(wave), 'r--', label=f'Fit')
-        ax.legend()
-    if return_plot_data:
-        plot_data = (wave, spectrum, res(wave))
-        return fluxes, vel, disp, cont, fluxes_err, v_err, sigma_err, cont_err, plot_data
-    else:
-        return fluxes, vel, disp, cont, fluxes_err, v_err, sigma_err, cont_err
 
 
 def deep_merge(dest, src):
@@ -1904,8 +1781,8 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                             cur_table_summary["flux_"+dap_results_correspondence[kw]] *= cur_flux_corr[exp_id]
                             cur_table_summary["e_flux_"+dap_results_correspondence[kw]] *= cur_flux_corr[exp_id]
                             cur_table_summary["vel_" + dap_results_correspondence[kw]] += vcorr
-                            cur_table_summary["disp_" + dap_results_correspondence[kw]] /= (curline_wl / 3e5)
-                            cur_table_summary["e_disp_"+dap_results_correspondence[kw]] /= (curline_wl / 3e5)
+                            cur_table_summary["disp_" + dap_results_correspondence[kw]] /= (curline_wl / 2.998e5)
+                            cur_table_summary["e_disp_"+dap_results_correspondence[kw]] /= (curline_wl / 2.998e5)
                             cur_table_summary.rename_columns(["flux_"+dap_results_correspondence[kw],
                                                               "e_flux_"+dap_results_correspondence[kw],
                                                               "vel_" + dap_results_correspondence[kw],
@@ -1927,8 +1804,8 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                             cur_table_summary['flux'] *= cur_flux_corr[exp_id]
                             cur_table_summary['e_flux'] *= cur_flux_corr[exp_id]
                             cur_table_summary['vel'] += vcorr
-                            cur_table_summary['disp'] /= (dap_results_correspondence[kw] / 3e5)
-                            cur_table_summary['e_disp'] /= (dap_results_correspondence[kw] / 3e5)
+                            cur_table_summary['disp'] /= (dap_results_correspondence[kw] / 2.998e5)
+                            cur_table_summary['e_disp'] /= (dap_results_correspondence[kw] / 2.998e5)
                             cur_table_summary.rename_columns(['flux', 'e_flux', 'vel', 'e_vel', 'disp', 'e_disp'],
                                                              [kw+"_flux", kw+"_fluxerr", kw+"_vel",
                                                               kw+"_velerr", kw+"_disp", kw+"_disperr"])
@@ -2321,183 +2198,19 @@ def process_all_rss(config, w_dir=None):
             tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
             fix_permission(f_tab_summary)
 
-        #==============================
-        log.info("Analysing spectra")
         table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
                                   converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
                                               'fluxcorr_z': str, 'vhel_corr': str, 'bgr': str})
-        mean_bounds = (-30, 30)
-        vel = cur_obj.get('velocity')
-        line_fit_params = []
-        line_quicksum_params = []
-        for line in config['imaging'].get('lines'):
-            wl_range = line.get('wl_range')
-            if not wl_range or (len(wl_range) < 2):
-                log.error(f"Incorrect wavelength range for line {line}")
-                statuses.append(False)
-                continue
-            line_name = line.get('line')
 
-            wl_range = np.array(wl_range) * (vel / 3e5 + 1)
-            cont_range = line.get('cont_range')
-            if not cont_range or (len(cont_range) < 2):
-                cont_range = None
-            else:
-                cont_range = np.array(cont_range) * (vel / 3e5 + 1)
-
-            mask_wl = line.get('mask_wl')
-            if not mask_wl or (len(mask_wl) < 2):
-                mask_wl = None
-            else:
-                mask_wl = np.array(mask_wl) * (vel / 3e5 + 1)
-
-            if 'line_fit' not in line:
-                # simple integration
-                if not isinstance(line_name, str):
-                    line_name = line_name[0]
-                for kw in ['flux', 'fluxerr']:
-                    if f'{line_name}_{kw}' not in table_fluxes.colnames:
-                        table_fluxes.add_column(np.nan, name=f'{line_name}_{kw}')
-                t = (line_name, wl_range, mask_wl, cont_range)
-                line_quicksum_params.append(t)
-            else:
-                # spectra fitting
-                if isinstance(line_name, str):
-                    line_name = [line_name]
-                max_comps = line.get('max_comps')
-                if max_comps is None:
-                    n_max_comps = 1
-                else:
-                    n_max_comps = max(max_comps)
-
-                for cur_line_name in line_name:
-                    for kw in ['flux', 'fluxerr', 'vel', 'velerr', 'disp', 'disperr', 'cont', 'conterr']:
-                        if f'{cur_line_name}_{kw}' not in table_fluxes.colnames:
-                            table_fluxes.add_column(np.nan, name=f'{cur_line_name}_{kw}')
-                        if n_max_comps > 1 and f'{cur_line_name}_c2_{kw}' not in table_fluxes.colnames:
-                            table_fluxes.add_column(np.nan, name=f'{cur_line_name}_c2_{kw}')
-                        if n_max_comps > 2 and f'{cur_line_name}_c3_{kw}' not in table_fluxes.colnames:
-                            table_fluxes.add_column(np.nan, name=f'{cur_line_name}_c3_{kw}')
-
-                for cur_line_name in ['SKY5577', 'SKY6300']:
-                    # add some sky lines
-                    for kw in ['flux', 'fluxerr', 'vel', 'velerr', 'disp', 'disperr', 'cont', 'conterr']:
-                        if f'{cur_line_name}_{kw}' not in table_fluxes.colnames:
-                            table_fluxes.add_column(np.nan, name=f'{cur_line_name}_{kw}')
-                line_fit = line.get('line_fit')
-                fix_ratios = line.get('fix_ratios')
-                if not fix_ratios:
-                    fix_ratios = None
-                include_comp = line.get('include_comp')
-                if include_comp is None:
-                    include_comp = np.arange(len(line_fit)).astype(int)
-                if line.get('show_fit_examples'):
-                    save_plot_test = line.get('show_fit_examples')
-                else:
-                    save_plot_test = None
-                if save_plot_test is not None:
-                    save_plot_ids = np.random.choice(range(len(table_fluxes)), 24)
-                else:
-                    save_plot_ids = None
-
-                tie_vel = line.get('tie_vel')
-                if tie_vel is None:
-                    tie_vel = [True] * len(line_fit)
-                tie_disp = line.get('tie_disp')
-                if tie_disp is None:
-                    tie_disp = [True] * len(line_fit)
-                max_comps = line.get('max_comps')
-                if max_comps is None:
-                    max_comps = [1] * len(line_fit)
-                t = (line_name, wl_range, mask_wl, line_fit,
-                     include_comp, fix_ratios, tie_vel, tie_disp, max_comps, save_plot_test, save_plot_ids)
-
-                line_fit_params.append(t)
-
-        nprocs = np.min([np.max([config.get('nprocs'), 1]), len(table_fluxes)])
-        if len(line_quicksum_params) > 0:
-            params = zip(table_fluxes['sourceid'], table_fluxes['fluxcorr_b'], table_fluxes['fluxcorr_r'],
-                         table_fluxes['fluxcorr_z'],
-                         table_fluxes['vhel_corr'], table_fluxes['bgr'], np.arange(len(table_fluxes)))
-            with mp.Pool(processes=nprocs) as pool:
-                for status, res, spec_id in tqdm(
-                        pool.imap(
-                            partial(quickflux_all_lines,
-                                    line_params=line_quicksum_params,
-                                    include_sky=config['imaging'].get('include_sky'),
-                                    partial_sky=config['imaging'].get('partial_sky'),
-                                    path_to_fits=cur_wdir, velocity=vel,
-                                    ), params),
-                        ascii=True, desc="Calculate moment0 in all RSS",
-                        total=len(table_fluxes), ):
-                    statuses.append(status)
-                    if not status:
-                        continue
-
-                    for kw in res.keys():
-                        table_fluxes[kw][spec_id] = res[kw]
-
-                pool.close()
-                pool.join()
-                gc.collect()
-                if not np.all(statuses):
-                    status_out = False
-                else:
-                    status_out = status_out & True
-
-        if len(line_fit_params) > 0:
-            all_plot_data = []
-            params = zip(table_fluxes['sourceid'], table_fluxes['fluxcorr_b'], table_fluxes['fluxcorr_r'],
-                         table_fluxes['fluxcorr_z'],
-                         table_fluxes['vhel_corr'], table_fluxes['bgr'], np.arange(len(table_fluxes)))
-            with mp.Pool(processes=nprocs) as pool:
-                for status, fit_res, plot_data, spec_id in tqdm(
-                        pool.imap(
-                            partial(fit_all_from_current_spec,
-                                    line_fit_params=line_fit_params, single_rss=False,
-                                    mean_bounds=mean_bounds, velocity=vel,
-                                    include_sky=config['imaging'].get('include_sky'),
-                                    partial_sky=config['imaging'].get('partial_sky'),
-                                    path_to_fits=cur_wdir
-                                    ), params),
-                        ascii=True, desc="Fit lines in all RSS",
-                        total=len(table_fluxes), ):
-                    statuses.append(status)
-                    if not status:
-                        continue
-
-                    all_plot_data.append(plot_data)
-                    for kw in fit_res.keys():
-                        table_fluxes[kw][spec_id] = fit_res[kw]
-
-                pool.close()
-                pool.join()
-                gc.collect()
-                if not np.all(statuses):
-                    status_out = False
-                else:
-                    status_out = status_out & True
-            if save_plot_test is not None and (len(all_plot_data) > 0):
-                fig = plt.figure(figsize=(20, 30))
-                gs = GridSpec(6, 4, fig, 0.1, 0.1, 0.99, 0.95, wspace=0.1, hspace=0.1,
-                              width_ratios=[1] * 4, height_ratios=[1] * 6)
-                cur_ax_id = 0
-
-                for cur_id in range(len(all_plot_data)):
-                    # TODO This is very rough fix
-                    if all_plot_data[cur_id] is None or (all_plot_data[cur_id][0] is None):
-                        continue
-                    ax = fig.add_subplot(gs[cur_ax_id])
-
-                    ax.plot(all_plot_data[cur_id][0][0], all_plot_data[cur_id][0][1], 'k-', label='Obs')
-                    ax.plot(all_plot_data[cur_id][0][0], all_plot_data[cur_id][0][2],
-                            'r--', label=f'Fit')
-                    ax.legend()
-                    ax.set_title(f"Row #{cur_id}", fontsize=16)
-                    cur_ax_id += 1
-                fig.savefig(save_plot_test, bbox_inches='tight')
-        table_fluxes.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
-        fix_permission(f_tab_summary)
+        table_fluxes, cur_status = analyse_spectra(
+            table_fluxes=table_fluxes, mean_bounds=mean_bounds_fitline,
+            sysvel=cur_obj.get('velocity'), file_rss=None, config=config,
+            single_rss=False, cur_wdir=cur_wdir
+        )
+        if cur_status:
+            table_fluxes.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+            fix_permission(f_tab_summary)
+        status_out = status_out & cur_status
         statuses.append(status_out)
     if not np.all(statuses):
         status_out = False
@@ -2506,69 +2219,316 @@ def process_all_rss(config, w_dir=None):
     return status_out
 
 
-def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sky=False, line_params=None, velocity=0):
-    source_ids, flux_cors_b, flux_cors_r, flux_cors_z, vhel_corrs, bgr, spec_id = params
-    source_ids = source_ids.split(', ')
-    flux_cors_b = flux_cors_b.split(', ')
-    flux_cors_r = flux_cors_r.split(', ')
-    flux_cors_z = flux_cors_z.split(', ')
-    vhel_corrs = vhel_corrs.split(', ')
-    bgr = bgr.split(', ')
-    wave = None
-    for ind, source_id in enumerate(source_ids):
-        pointing, expnum, fib_id = source_id.split('_')
-        expnum = int(expnum)
-        fib_id = int(fib_id) - 1
-        if include_sky:
-            rssfile = os.path.join(path_to_fits, pointing, f'lvmCFrame-{expnum:0>8}.fits')
+def analyse_spectra(table_fluxes=None, mean_bounds=mean_bounds_fitline,
+                    sysvel=0, config=None, cur_wdir=None,
+                    single_rss=False, flux=None, ivar=None, sky=None, sky_ivar=None,
+                    lsf=None, vhel=None, header=None):
+    """
+    Analyse single or multiple RSS spectra to measure line fluxes with fitting and/or simple integration
+    flux, ivar, sky, sky_ivar, lsf, vhel are used only if single_rss=True
+    :param table_fluxes: table with fibers information
+    :param mean_bounds: wavelength ranges to calculate mean fluxes for continuum estimation
+    :param sysvel: systemic velocity to correct wavelengths
+    :param config: configuration dictionary
+    :param cur_wdir: current working directory (if single_rss=False)
+    :return:
+    """
+    log.info("Analysing spectra")
+
+    line_fit_params = []
+    line_quicksum_params = []
+    statuses = []
+
+    if single_rss:
+        spec_ids = np.arange(flux.shape[0]).astype(int)
+    else:
+        header = None
+
+
+    for line in config['imaging'].get('lines'):
+        wl_range = line.get('wl_range')
+        if not wl_range or (len(wl_range) < 2):
+            log.error(f"Incorrect wavelength range for line {line}")
+            statuses.append(False)
+            continue
+        line_name = line.get('line')
+
+        wl_range = np.array(wl_range) * (sysvel / 2.998e5 + 1)
+        cont_range = line.get('cont_range')
+        if not cont_range or (len(cont_range) < 2):
+            cont_range = None
         else:
-            rssfile = os.path.join(path_to_fits, pointing, f'lvmSFrame-{expnum:0>8}.fits')
+            cont_range = np.array(cont_range) * (sysvel / 2.998e5 + 1)
 
-        with fits.open(rssfile) as hdu:
-            if wave is None:
-                wave = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
-                            hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] +
-                           hdu['FLUX'].header['CRVAL1'])
-                dw = hdu['FLUX'].header['CDELT1']
-                flux = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
-                ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
+        mask_wl = line.get('mask_wl')
+        if not mask_wl or (len(mask_wl) < 2):
+            mask_wl = None
+        else:
+            mask_wl = np.array(mask_wl) * (sysvel / 2.998e5 + 1)
 
-            rec_b = wave < 5750
-            rec_r = (wave >= 5750) & (wave < 7600)
-            rec_z = wave >= 7600
-            if partial_sky:
-                flux[ind, :] = ((hdu['FLUX'].data[fib_id, :] + hdu['SKY'].data[fib_id, :]) -
-                                mask_sky_at_bright_lines(hdu['SKY'].data[fib_id, :], wave=wave,
-                                                         vel=velocity, mask=hdu['MASK'].data[fib_id, :]))
+        if 'line_fit' not in line:
+            # simple integration params
+            if not isinstance(line_name, str):
+                line_name = line_name[0]
+            for kw in ['flux', 'fluxerr']:
+                if f'{line_name}_{kw}' not in table_fluxes.colnames:
+                    table_fluxes.add_column(np.nan, name=f'{line_name}_{kw}')
+            t = (line_name, wl_range, mask_wl, cont_range)
+            line_quicksum_params.append(t)
+        else:
+            # spectra fitting params
+            if isinstance(line_name, str):
+                line_name = [line_name]
+            max_comps = line.get('max_comps')
+            if max_comps is None:
+                n_max_comps = 1
             else:
-                flux[ind, rec_b] =(hdu['FLUX'].data[fib_id, rec_b] - float(bgr[ind])) * float(flux_cors_b[ind])
-                flux[ind, rec_r] = (hdu['FLUX'].data[fib_id, rec_r] - float(bgr[ind])) * float(flux_cors_r[ind])
-                flux[ind, rec_z] = (hdu['FLUX'].data[fib_id, rec_z] - float(bgr[ind])) * float(flux_cors_z[ind])
-            ivar[ind, rec_b] = hdu['IVAR'].data[fib_id, rec_b] / float(flux_cors_b[ind]) ** 2
-            ivar[ind, rec_r] = hdu['IVAR'].data[fib_id, rec_r] / float(flux_cors_r[ind]) ** 2
-            ivar[ind, rec_z] = hdu['IVAR'].data[fib_id, rec_z] / float(flux_cors_z[ind]) ** 2
-            flux[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
+                n_max_comps = max(max_comps)
 
-        if ind > 1:
-            delta_v = float(vhel_corrs[ind]) - float(vhel_corrs[0])
-            if delta_v > 3.:
-                flux[ind, :] = np.interp(wave, wave*(1-delta_v/3e5), flux[ind, :])
+            for cur_line_name in line_name:
+                for kw in ['flux', 'fluxerr', 'vel', 'velerr', 'disp', 'disperr', 'cont', 'conterr']:
+                    if f'{cur_line_name}_{kw}' not in table_fluxes.colnames:
+                        table_fluxes.add_column(np.nan, name=f'{cur_line_name}_{kw}')
+                    if n_max_comps > 1 and f'{cur_line_name}_c2_{kw}' not in table_fluxes.colnames:
+                        table_fluxes.add_column(np.nan, name=f'{cur_line_name}_c2_{kw}')
+                    if n_max_comps > 2 and f'{cur_line_name}_c3_{kw}' not in table_fluxes.colnames:
+                        table_fluxes.add_column(np.nan, name=f'{cur_line_name}_c3_{kw}')
 
-    if len(flux.shape) == 2 and flux.shape[0] > 1:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-            )
-            flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
-            ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0)**2)
-    elif len(flux.shape) == 2:
-        flux = flux[0, :]
-        ivar = ivar[0, :]
+            for cur_line_name in ['SKY5577', 'SKY6300']:
+                # add some sky lines
+                for kw in ['flux', 'fluxerr', 'vel', 'velerr', 'disp', 'disperr', 'cont', 'conterr']:
+                    if f'{cur_line_name}_{kw}' not in table_fluxes.colnames:
+                        table_fluxes.add_column(np.nan, name=f'{cur_line_name}_{kw}')
+            line_fit = line.get('line_fit')
+            fix_ratios = line.get('fix_ratios')
+            if not fix_ratios:
+                fix_ratios = None
+            include_comp = line.get('include_comp')
+            if include_comp is None:
+                include_comp = np.arange(len(line_fit)).astype(int)
+            if line.get('show_fit_examples'):
+                save_plot_test = line.get('show_fit_examples')
+            else:
+                save_plot_test = None
+            if save_plot_test is not None:
+                save_plot_ids = np.random.choice(range(len(table_fluxes)), 24)
+            else:
+                save_plot_ids = None
+
+            tie_vel = line.get('tie_vel')
+            if tie_vel is None:
+                tie_vel = [True] * len(line_fit)
+            tie_disp = line.get('tie_disp')
+            if tie_disp is None:
+                tie_disp = [True] * len(line_fit)
+            max_comps = line.get('max_comps')
+            if max_comps is None:
+                max_comps = [1] * len(line_fit)
+            t = (line_name, wl_range, mask_wl, line_fit,
+                 include_comp, fix_ratios, tie_vel, tie_disp, max_comps, save_plot_test, save_plot_ids)
+
+            line_fit_params.append(t)
+
+    nprocs = np.min([np.max([config.get('nprocs'), 1]), len(table_fluxes)])
+
+    if (len(line_quicksum_params) > 0) or (len(line_fit_params) > 0):
+        if single_rss:
+            params = zip(flux, ivar, sky, sky_ivar, lsf, vhel, spec_ids)
+        else:
+            params = zip(table_fluxes['sourceid'], table_fluxes['fluxcorr_b'], table_fluxes['fluxcorr_r'],
+                         table_fluxes['fluxcorr_z'],
+                         table_fluxes['vhel_corr'], table_fluxes['bgr'], np.arange(len(table_fluxes)))
+
+    if len(line_quicksum_params) > 0:
+        ### Mom0 calculations
+        # for param in tqdm(params,ascii=True, desc="Calculate moment0 in all RSS",
+        #             total=len(table_fluxes), ):
+        #         status, res, spec_id = quickflux_all_lines(param,
+        #                         line_params=line_quicksum_params,
+        #                         include_sky=config['imaging'].get('include_sky'),
+        #                         partial_sky=config['imaging'].get('partial_sky'),
+        #                         path_to_fits=cur_wdir, velocity=sysvel,
+        #                         single_rss=single_rss, header=header
+        #                         )
+        #
+        #         statuses.append(status)
+        #         if not status:
+        #             continue
+        with mp.Pool(processes=nprocs) as pool:
+            for status, res, spec_id in tqdm(
+                    pool.imap(
+                        partial(quickflux_all_lines,
+                                line_params=line_quicksum_params,
+                                include_sky=config['imaging'].get('include_sky'),
+                                partial_sky=config['imaging'].get('partial_sky'),
+                                path_to_fits=cur_wdir, velocity=sysvel,
+                                single_rss=single_rss, header=header
+                                ), params),
+                    ascii=True, desc="Calculate moment0 in all RSS",
+                    total=len(table_fluxes), ):
+                statuses.append(status)
+                if not status:
+                    continue
+
+                for kw in res.keys():
+                    table_fluxes[kw][spec_id] = res[kw]
+
+            pool.close()
+            pool.join()
+            gc.collect()
+
+
+    if len(line_fit_params) > 0:
+        ### Line fitting
+        all_plot_data = []
+
+        if single_rss:
+            params = zip(flux, ivar, sky, sky_ivar, lsf, vhel, spec_ids)
+            desc = "Fit lines in single RSS"
+        else:
+            params = zip(table_fluxes['sourceid'], table_fluxes['fluxcorr_b'], table_fluxes['fluxcorr_r'],
+                         table_fluxes['fluxcorr_z'],
+                         table_fluxes['vhel_corr'], table_fluxes['bgr'], np.arange(len(table_fluxes)))
+            desc = "Fit lines in all RSS"
+        with mp.Pool(processes=nprocs) as pool:
+            for status, fit_res, plot_data, spec_id in tqdm(
+                    pool.imap(
+                        partial(fit_all_from_current_spec,
+                                line_fit_params=line_fit_params, single_rss=single_rss,
+                                mean_bounds=mean_bounds, velocity=sysvel, header=header,
+                                include_sky=config['imaging'].get('include_sky'),
+                                partial_sky=config['imaging'].get('partial_sky'),
+                                path_to_fits=cur_wdir
+                                ), params),
+                    ascii=True, desc=desc,
+                    total=len(table_fluxes), ):
+                statuses.append(status)
+                if not status:
+                    continue
+
+                all_plot_data.append(plot_data)
+                for kw in fit_res.keys():
+                    table_fluxes[kw][spec_id] = fit_res[kw]
+
+            pool.close()
+            pool.join()
+            gc.collect()
+
+        if save_plot_test is not None and (len(all_plot_data) > 0):
+            fig = plt.figure(figsize=(20, 30))
+            gs = GridSpec(6, 4, fig, 0.1, 0.1, 0.99, 0.95, wspace=0.1, hspace=0.1,
+                          width_ratios=[1] * 4, height_ratios=[1] * 6)
+            cur_ax_id = 0
+
+            for cur_id in range(len(all_plot_data)):
+                # TODO This is very rough fix
+                if all_plot_data[cur_id] is None or (all_plot_data[cur_id][0] is None):
+                    continue
+                ax = fig.add_subplot(gs[cur_ax_id])
+
+                ax.plot(all_plot_data[cur_id][0][0], all_plot_data[cur_id][0][1], 'k-', label='Obs')
+                ax.plot(all_plot_data[cur_id][0][0], all_plot_data[cur_id][0][2],
+                        'r--', label=f'Fit')
+                ax.legend()
+                ax.set_title(f"Row #{cur_id}", fontsize=16)
+                cur_ax_id += 1
+            fig.savefig(save_plot_test, bbox_inches='tight')
+
+        if not np.all(statuses):
+            status_out = False
+        else:
+            status_out = True
+    return table_fluxes, status_out
+
+
+def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sky=False, line_params=None,
+                        single_rss=True, header=None, velocity=0):
+    # Note: sys. velocity is needed here only if partial_sky, as the wl_range are already corrected
+    if not single_rss:
+        ### Process multiple exposures
+        source_ids, flux_cors_b, flux_cors_r, flux_cors_z, vhel_corrs, bgr, spec_id = params
+        source_ids = source_ids.split(', ')
+        flux_cors_b = flux_cors_b.split(', ')
+        flux_cors_r = flux_cors_r.split(', ')
+        flux_cors_z = flux_cors_z.split(', ')
+        vhel_corrs = vhel_corrs.split(', ')
+        bgr = bgr.split(', ')
+        wave = None
+        for ind, source_id in enumerate(source_ids):
+            pointing, expnum, fib_id = source_id.split('_')
+            expnum = int(expnum)
+            fib_id = int(fib_id) - 1
+            if include_sky:
+                rssfile = os.path.join(path_to_fits, pointing, f'lvmCFrame-{expnum:0>8}.fits')
+            else:
+                rssfile = os.path.join(path_to_fits, pointing, f'lvmSFrame-{expnum:0>8}.fits')
+
+            with fits.open(rssfile) as hdu:
+                if wave is None:
+                    wave = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
+                                hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] +
+                               hdu['FLUX'].header['CRVAL1'])
+                    dw = hdu['FLUX'].header['CDELT1']
+                    flux = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
+                    ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
+
+                rec_b = wave < 5750
+                rec_r = (wave >= 5750) & (wave < 7600)
+                rec_z = wave >= 7600
+                if partial_sky:
+                    flux[ind, :] = ((hdu['FLUX'].data[fib_id, :] + hdu['SKY'].data[fib_id, :]) -
+                                    mask_sky_at_bright_lines(hdu['SKY'].data[fib_id, :], wave=wave,
+                                                             vel=velocity, mask=hdu['MASK'].data[fib_id, :]))
+                else:
+                    flux[ind, rec_b] =(hdu['FLUX'].data[fib_id, rec_b] - float(bgr[ind])) * float(flux_cors_b[ind])
+                    flux[ind, rec_r] = (hdu['FLUX'].data[fib_id, rec_r] - float(bgr[ind])) * float(flux_cors_r[ind])
+                    flux[ind, rec_z] = (hdu['FLUX'].data[fib_id, rec_z] - float(bgr[ind])) * float(flux_cors_z[ind])
+                ivar[ind, rec_b] = hdu['IVAR'].data[fib_id, rec_b] / float(flux_cors_b[ind]) ** 2
+                ivar[ind, rec_r] = hdu['IVAR'].data[fib_id, rec_r] / float(flux_cors_r[ind]) ** 2
+                ivar[ind, rec_z] = hdu['IVAR'].data[fib_id, rec_z] / float(flux_cors_z[ind]) ** 2
+                flux[ind, hdu['MASK'].data[fib_id, :] == 1] = np.nan
+
+            if ind > 1:
+                delta_v = float(vhel_corrs[ind]) - float(vhel_corrs[0])
+                if delta_v > 3.:
+                    flux[ind, :] = np.interp(wave, wave*(1-delta_v/2.998e5), flux[ind, :])
+            else:
+                vhel = float(vhel_corrs[0])
+
+        if len(flux.shape) == 2 and flux.shape[0] > 1:
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                )
+                flux = np.nanmean(sigma_clip(flux, sigma=sigma_clip_value, axis=0, masked=False), axis=0)
+                ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0) ** 2)
+        elif len(flux.shape) == 2:
+            flux = flux[0, :]
+            ivar = ivar[0, :]
+
+    else:
+        ### Process single RSS
+        flux, ivar, sky, sky_ivar, lsf, vhel_corr, spec_id = params
+        if isinstance(vhel_corr, str):
+            vhel = np.mean([float(vh) for vh in vhel_corr.split(',')])
+        else:
+            vhel = float(np.nanmean(vhel_corr))
+        dw = header['CDELT1']
+        wave = ((np.arange(header['NAXIS1']) - header['CRPIX1'] + 1) * dw + header['CRVAL1'])
+
+        # error = 1. / np.sqrt(ivar)
+        # error[~np.isfinite(error)] = 1e10
 
     res_out = {}
 
     for cur_line_params in line_params:
         (line_name, wl_range, mask_wl, cont_range) = cur_line_params
+        wl_range = np.array(wl_range) * ( - vhel / 2.998e5 + 1)
+        if cont_range is not None:
+            cont_range = np.array(cont_range) * ( - vhel / 2.998e5 + 1)
+        if mask_wl is not None:
+            mask_wl = np.array(mask_wl) * ( - vhel / 2.998e5 + 1)
+
         selwave_extended = np.flatnonzero((wave >= (min(wl_range) - 70)) * (wave <= (max(wl_range) + 70)))
         cur_wave = wave[selwave_extended]
         cur_flux = flux[selwave_extended]
@@ -2621,6 +2581,7 @@ def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sk
         res_out[f'{line_name}_flux'] = flux_rss/np.pi/(fiber_d/2)**2
         res_out[f'{line_name}_fluxerr'] = np.sqrt(error_rss)/np.pi/(fiber_d/2)**2
     return True, res_out, spec_id
+
 
 def derive_radec_ifu(mjd, expnum, first_exp=None, objname=None, pointing_name=None, w_dir=None):
     # Input filenames
@@ -2954,12 +2915,12 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
             if ind > 1:
                 delta_v = float(vhel_corrs[ind]) - float(vhel_corrs[0])
                 if delta_v > 2.:
-                    flux[ind, :] = np.interp(wl_grid, wl_grid*(1-delta_v/3e5), flux[ind, :])
+                    flux[ind, :] = np.interp(wl_grid, wl_grid*(1-delta_v/2.998e5), flux[ind, :])
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
             )
-            flux = np.nanmean(sigma_clip(flux, sigma=1.3, axis=0, masked=False), axis=0)
+            flux = np.nanmean(sigma_clip(flux, sigma=sigma_clip_value, axis=0, masked=False), axis=0)
             ivar = 1 / (np.nansum(1 / ivar, axis=0) / np.sum(np.isfinite(ivar), axis=0)**2)
             sky = np.nansum(sky, axis=0) / np.sum(np.isfinite(sky), axis=0)
             sky_ivar = 1 / (np.nansum(1 / sky_ivar, axis=0) / np.sum(np.isfinite(sky_ivar), axis=0)**2)
@@ -3064,95 +3025,6 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
                 res_output[f'{ln}_c3_disperr'] = np.round(np.array(third_comp['disp_err'])[rec_comp[0]], 1)
 
     return status, res_output, all_plot_data, spec_id
-
-
-def quickflux_single_rss(rsshdu, wrange, crange=None, selection=None, include_sky=False, partial_sky=True):
-    naxis1 = rsshdu[1].data.shape[1]
-    if selection is None:
-        selection = np.arange(rsshdu[1].data.shape[0])
-    naxis2 = len(selection)
-    wave = ((np.arange(rsshdu['FLUX'].header['NAXIS1']) - rsshdu['FLUX'].header['CRPIX1'] + 1) *
-            rsshdu['FLUX'].header['CDELT1'] + rsshdu['FLUX'].header['CRVAL1'])
-    dw = wave[1]-wave[0]
-    selwave_extended = (wave >= (min(wrange)-100)) * (wave <= (max(wrange)+100))
-    wave = wave[selwave_extended]
-    if 'FLUX_SKYCORR' in rsshdu and partial_sky:
-        flux_all = rsshdu['FLUX'].data[:, selwave_extended]
-    elif include_sky:
-        flux_all = (rsshdu['FLUX'].data + rsshdu['SKY'].data)[:, selwave_extended]
-    else:
-        flux_all = rsshdu['FLUX'].data[:, selwave_extended]
-    errors_all = rsshdu["IVAR"].data[:, selwave_extended]
-    if 'MASK' in rsshdu:
-        mask_all = rsshdu["MASK"].data[:, selwave_extended]
-    else:
-        mask_all = np.zeros_like(flux_all)
-
-    selwave = (wave >= wrange[0]) * (wave <= wrange[1])
-    cwave = np.mean(wave[selwave])
-    cwave1 = np.nan
-
-    selwavemask = np.tile(selwave, (naxis2, 1))
-
-    nbadpix = np.nansum(mask_all[:,selwave] == 1, axis=1)
-    nallpix = np.nansum(selwave)
-    rec_badrows = nbadpix/nallpix > 0.5
-    # Replace NaN and zero values to median
-    rec_finite = np.zeros_like(flux_all, dtype=bool)
-    rec_finite[selection, :] = True
-    rec_finite = rec_finite & (mask_all != 1) & (flux_all != 0)
-    flux_all[~rec_finite] = np.nan
-    flux_all_med = median_filter(flux_all, (21, 1))
-    rec_med_upd = ~np.isfinite(flux_all_med)
-    flux_all_med1 = median_filter(flux_all_med, (1, 21))
-    flux_all_med[rec_med_upd] = flux_all_med1[rec_med_upd]
-    flux_all[~rec_finite] = flux_all_med[~rec_finite]
-    rssmasked = flux_all[selection] * selwavemask
-    errormasked = errors_all[selection] * selwavemask
-    rssmasked[rssmasked == 0] = np.nan
-
-    flux_rss = np.nansum(rssmasked, axis=1)*dw
-    error_rss = np.nansum(errormasked**2, axis=1)*dw**2
-
-    nselpix = np.sum(np.isfinite(rssmasked), axis=1)
-    nselpix1 = np.zeros_like(nselpix)
-
-    if len(wrange) == 4:
-        selwave1 = ((wave >= wrange[2]) * (wave <= wrange[3]))
-        nbadpix = np.nansum(mask_all[:,selwave1] == 1, axis=1)
-        nallpix = np.nansum(selwave1)
-        rec_badrows = rec_badrows & (nbadpix / nallpix > 0.5)
-
-        cwave1 = np.mean(wave[selwave1])
-        selwavemask = np.tile(selwave1, (naxis2, 1))
-        rssmasked = flux_all[selection] * selwavemask
-        errormasked = errors_all[selection] * selwavemask
-        rssmasked[rssmasked == 0] = np.nan
-        flux_rss += (np.nansum(rssmasked, axis=1)*dw)
-        error_rss += (np.nansum(errormasked ** 2, axis=1)*dw**2)
-        nselpix1 = np.sum(np.isfinite(rssmasked), axis=1)
-
-    # Optional continuum subtraction
-    if crange is not None and (len(crange) >= 2):
-        cselwave = (wave >= crange[0]) * (wave <= crange[1])
-
-        if len(crange) == 2:
-            cflux = np.nanmedian(flux_all[selection, cselwave], axis=1)
-            flux_rss -= (cflux * nselpix * dw)
-            flux_rss -= (cflux * nselpix1 * dw)
-        else:
-            cselwave1 = (wave >= crange[2]) * (wave <= crange[3])
-            for cur_ind, cur_spec in enumerate(flux_all[selection]):
-                mask_fit = np.isfinite(cur_spec) & (cselwave | cselwave1)
-                if np.sum(mask_fit) >= 5:
-                    res = np.polyfit(wave[mask_fit], cur_spec[mask_fit], 1)
-                    p = np.poly1d(res)
-                    flux_rss[cur_ind] -= (p(cwave) * nselpix[cur_ind] * dw)
-                    if np.isfinite(cwave1):
-                        flux_rss[cur_ind] -= (p(cwave1) * nselpix1[cur_ind] * dw)
-
-    flux_rss[(flux_rss == 0) | rec_badrows] = np.nan
-    return flux_rss, np.sqrt(error_rss)
 
 
 def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
@@ -3429,156 +3301,38 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
 
             continue
 
-        # if cur_obj['name'] == 'Orion':
-        #     mean_bounds = (-2, 2)
-        # else:
-        mean_bounds = (-10, 10)
-        vel = cur_obj.get('velocity')
-
+        ### Check if there is a star-subtracted RSS file and use it by default
         f_rss_emis_check = f_rss.replace('.fits', '_emis.fits')
         if os.path.isfile(f_rss_emis_check):
             f_rss = f_rss_emis_check
             log.warning(f"Found star-subtracted RSS file {os.path.basename(f_rss_emis_check)}. "
                         f"Continue using this file. Move/delete it if this was unintended!")
 
-        rss = fits.open(f_rss)
-        table_fibers = Table(rss['SLITMAP'].data)
+        with fits.open(f_rss) as rss:
+            table_fibers = Table(rss['SLITMAP'].data)
 
-        if not config['imaging'].get('override_flux_table') and os.path.isfile(f_tab):
-            table_fluxes = Table.read(f_tab, format='ascii.fixed_width_two_line')
-        else:
-            if binned:
-                table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec', 'binnum'].copy()
+            if not config['imaging'].get('override_flux_table') and os.path.isfile(f_tab):
+                table_fluxes = Table.read(f_tab, format='ascii.fixed_width_two_line')
             else:
-                table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec'].copy()
-
-        line_fit_params = []
-
-        log.info(f"...Compute noise and median continuum level at 6380-6480 AA")
-
-        naxis1 = rss["FLUX"].data.shape[1]
-        naxis2 = rss[1].data.shape[0]
-        wcsrss = WCS(rss[1].header)
-        wave = np.array(wcsrss.pixel_to_world(np.arange(naxis1), 0))
-        wave = np.array(wave[0])
-        dw = wave[1] - wave[0]
-        selwave = (wave >= (6380*(vel / 3e5 + 1))) & (wave <= (6480*(vel / 3e5 + 1)))
-        wave = wave[selwave]
-        if ('FLUX_SKYCORR' in rss) and config['imaging'].get('partial_sky'):
-            flux_all = rss['FLUX_SKYCORR'].data[:, selwave]
-        elif config['imaging'].get('include_sky'):
-            flux_all = (rss['FLUX'].data + rss['SKY'].data)[:, selwave]
-        else:
-            flux_all = rss["FLUX"].data[:, selwave]
-        if 'MASK' in rss:
-            mask_all = rss["MASK"].data[:, selwave]
-            flux_all[mask_all > 0] = np.nan
-        flux_all[flux_all == 0] = np.nan
-        for kw in ['R_cont_med', 'R_cont_err']:
-            if kw not in table_fluxes.colnames:
-                table_fluxes.add_column(np.nan, name=kw)
-        table_fluxes['R_cont_med'][:] = np.nanmedian(flux_all, axis=1)
-        table_fluxes['R_cont_err'][:] = np.nanstd(flux_all, axis=1)
-
-        for line in config['imaging'].get('lines'):
-            wl_range = line.get('wl_range')
-            if not wl_range or (len(wl_range) < 2):
-                log.error(f"Incorrect wavelength range for line {line}")
-                statuses.append(False)
-                continue
-            line_name = line.get('line')
-
-            wl_range = np.array(wl_range) * (vel / 3e5 + 1)
-            cont_range = line.get('cont_range')
-            if not cont_range or (len(cont_range) < 2):
-                cont_range = None
-            else:
-                cont_range = np.array(cont_range) * (vel / 3e5 + 1)
-
-            mask_wl = line.get('mask_wl')
-            if not mask_wl or (len(mask_wl) < 2):
-                mask_wl = None
-            else:
-                mask_wl = np.array(mask_wl) * (vel / 3e5 + 1)
-
-            if 'line_fit' not in line:
-                # simple integration
-                if not isinstance(line_name, str):
-                    line_name = line_name[0]
-                log.info(f"...Compute fluxes in {line_name}")
-                for kw in ['flux', 'fluxerr']:
-                    if f'{line_name}_{kw}' not in table_fluxes.colnames:
-                        table_fluxes.add_column(np.nan, name=f'{line_name}_{kw}')
-                flux, err = quickflux_single_rss(rss, wl_range, crange=cont_range,
-                                                 include_sky=config['imaging'].get('include_sky'),
-                                                 partial_sky=config['imaging'].get('partial_sky'))
-
-                table_fluxes[f'{line_name}_flux'][:] = flux/np.pi/(fiber_d/2)**2
-                table_fluxes[f'{line_name}_fluxerr'][:] = err/np.pi/(fiber_d/2)**2
-            else:
-                # spectra fitting
-                if isinstance(line_name, str):
-                    line_name = [line_name]
-                for cur_line_name in line_name:
-                    for kw in ['flux', 'fluxerr', 'vel', 'velerr', 'disp', 'disperr', 'cont', 'conterr']:
-                        if f'{cur_line_name}_{kw}' not in table_fluxes.colnames:
-                            table_fluxes.add_column(np.nan, name=f'{cur_line_name}_{kw}')
-                for cur_line_name in ['SKY5577', 'SKY6300']:
-                    # add some sky lines
-                    for kw in ['flux', 'fluxerr', 'vel', 'velerr', 'disp', 'disperr', 'cont', 'conterr']:
-                        if f'{cur_line_name}_{kw}' not in table_fluxes.colnames:
-                            table_fluxes.add_column(np.nan, name=f'{cur_line_name}_{kw}')
-                line_fit = line.get('line_fit')
-                fix_ratios = line.get('fix_ratios')
-                tie_vel = line.get('tie_vel')
-                if tie_vel is None:
-                    tie_vel = [True]*len(line_fit)
-                tie_disp = line.get('tie_disp')
-                if tie_disp is None:
-                    tie_disp = [True]*len(line_fit)
-                max_comps = line.get('max_comps')
-                if max_comps is None:
-                    max_comps = [1]*len(line_fit)
-                if not fix_ratios:
-                    fix_ratios = None
-                include_comp = line.get('include_comp')
-                if include_comp is None:
-                    include_comp = np.arange(len(line_fit)).astype(int)
-                if line.get('show_fit_examples'):
-                    save_plot_test = line.get('show_fit_examples')
+                if binned:
+                    table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec', 'binnum'].copy()
                 else:
-                    save_plot_test = None
-                if save_plot_test:
-                    save_plot_ids = np.random.choice(range(rss['FLUX'].header['NAXIS2']), 24)
-                else:
-                    save_plot_ids = None
-                t = (line_name, wl_range, mask_wl, line_fit,
-                     include_comp, fix_ratios, tie_vel, tie_disp, max_comps, save_plot_test, save_plot_ids)
-                line_fit_params.append(t)
-
-        if len(line_fit_params) > 0:
-            nprocs = np.min([np.max([config.get('nprocs'), 1]), rss['FLUX'].header['NAXIS2']])
-            spec_ids = np.arange(rss['FLUX'].header['NAXIS2']).astype(int)
-            local_statuses = []
-            all_plot_data = []
+                    table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec'].copy()
 
             if ('FLUX_SKYCORR' in rss) and config['imaging'].get('partial_sky'):
-                    flux = rss['FLUX_SKYCORR'].data
-                    flux[flux == 0] = np.nan
-
+                flux = rss['FLUX_SKYCORR'].data
+                flux[flux == 0] = np.nan
             elif config['imaging'].get('include_sky'):
                 flux = rss['FLUX'].data + rss['SKY'].data
                 flux[~np.isfinite(rss['FLUX'].data) | (rss['FLUX'].data == 0)] = np.nan
             else:
                 flux = rss['FLUX'].data
                 flux[flux == 0] = np.nan
-            if mean_bounds is None:
-                mean_bounds = (-5, 5)
             if 'SKY' in rss and np.nanmedian(rss['SKY'].data) != 0:
                 sky = rss['SKY'].data
                 sky_ivar = rss['SKY_IVAR'].data
                 if 'MASK' in rss:
-                    sky[(rss['MASK'].data > 0) ] = np.nan #| (rss['SKY'].data == 0)
+                    sky[(rss['MASK'].data > 0)] = np.nan  # | (rss['SKY'].data == 0)
             else:
                 sky = flux * np.nan
                 sky_ivar = flux * np.nan
@@ -3593,35 +3347,21 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 vhel = t['vhel_corr']
             else:
                 vhel = np.zeros_like(flux)
-            params = zip(flux, ivar, sky, sky_ivar, lsf, vhel, spec_ids)
-            with mp.Pool(processes=nprocs) as pool:
-                for status, fit_res, plot_data, spec_id in tqdm(
-                                pool.imap(
-                                    partial(fit_all_from_current_spec, header=header,
-                                            line_fit_params=line_fit_params,
-                                            mean_bounds=mean_bounds, velocity=vel,
-                                            ), params),
-                                ascii=True, desc="Fit lines in combined RSS",
-                                total=rss['FLUX'].header['NAXIS2'], ):
-                    local_statuses.append(status)
-                    if not status:
-                        continue
 
-                    all_plot_data.append(plot_data)
-                    for kw in fit_res.keys():
-                        table_fluxes[kw][spec_id] = fit_res[kw]
+        table_fluxes, cur_status = analyse_spectra(
+            table_fluxes=table_fluxes, mean_bounds=mean_bounds_fitline,
+            sysvel=cur_obj.get('velocity'), config=config,
+            single_rss=True, vhel=vhel, flux=flux, ivar=ivar, sky=sky,
+            sky_ivar=sky_ivar, lsf=lsf, header=header
+        )
 
-                pool.close()
-                pool.join()
-                gc.collect()
-                if not np.all(local_statuses):
-                    status_out = False
-                else:
-                    status_out = status_out & True
-        rss.close()
-        table_fluxes.write(f_tab, overwrite=True, format='ascii.fixed_width_two_line')
-        fix_permission(f_tab)
+
+        if cur_status:
+            table_fluxes.write(f_tab, overwrite=True, format='ascii.fixed_width_two_line')
+            fix_permission(f_tab)
+        status_out = status_out & cur_status
         statuses.append(status_out)
+
     return np.all(statuses)
 
 
@@ -4328,7 +4068,7 @@ def extract_spectrum_for_cur_fiber(params, hdu=None):
 
         delta_v = float(float(vhel_corrs[ind]) - corr_vel_line)
         if delta_v > 2.:
-            flux[ind, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 3e5), flux[ind, :])
+            flux[ind, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 2.998e5), flux[ind, :])
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -4483,7 +4223,7 @@ def reconstruct_cube(config, w_dir=None):
                     flux = rss['FLUX'].data[fib_id,rec_wave] * fluxcorrs[cur_ind]
                     delta_v = vhel_corr[cur_ind] - vhel_corr[0]
                     if abs(delta_v) > 3.:
-                        flux = np.interp(wave[rec_wave], wave[rec_wave]*(1-delta_v/3e5), flux)
+                        flux = np.interp(wave[rec_wave], wave[rec_wave]*(1-delta_v/2.998e5), flux)
                     if cur_fluxes is None:
                         cur_fluxes = flux
                     else:
@@ -5171,11 +4911,11 @@ def create_single_rss(config, w_dir=None):
                     # Apply velocity correction
                     delta_v = cur_vhel_corr[f_id] - ave_vhel
                     if delta_v > 2.:
-                        fluxes[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 3e5),
+                        fluxes[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 2.998e5),
                                                    fluxes[f_id, :])
-                        fluxes_skycorr[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 3e5),
+                        fluxes_skycorr[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 2.998e5),
                                                             fluxes_skycorr[f_id, :])
-                        ivars[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 3e5),
+                        ivars[f_id, :] = np.interp(wl_grid, wl_grid * (1 - delta_v / 2.998e5),
                                                             ivars[f_id, :])
 
                 lsf_corr_b = ",".join(np.round(np.nanmedian(lsf_corr[:, rec_b]*wl_step, axis=1),2).astype(str))
@@ -5215,8 +4955,8 @@ def mask_sky_at_bright_lines(sky_spec, mask=None, wave=None, vel=0):
     rec_masked = mask > 0
     spec_out = sky_spec.copy()
     for l in lines:
-        cur_wl_mask = np.flatnonzero((wave < ((l+wid)*(1+vel/3e5))) & (wave > ((l-wid)*(1+vel/3e5))))
-        cur_wl_source = np.flatnonzero(~rec_masked & (wave < ((l + wid*5) * (1 + vel / 3e5))) & (wave > ((l - wid*5) * (1 + vel / 3e5))))
+        cur_wl_mask = np.flatnonzero((wave < ((l+wid)*(1+vel/2.998e5))) & (wave > ((l-wid)*(1+vel/2.998e5))))
+        cur_wl_source = np.flatnonzero(~rec_masked & (wave < ((l + wid*5) * (1 + vel / 2.998e5))) & (wave > ((l - wid*5) * (1 + vel / 2.998e5))))
         if len(cur_wl_source) > 10:
             spec_out[cur_wl_mask] = np.percentile(sky_spec[cur_wl_source], 30)
     # rec_masked = np.flatnonzero(rec_masked)
@@ -5376,6 +5116,220 @@ def mask_sky_at_bright_lines(sky_spec, mask=None, wave=None, vel=0):
 #         rss_orig.writeto(cur_f.split(".fits")[0]+'_test.fits', overwrite=True)
 #         statuses.append(True)
 #
+#
+#
+# def quickflux_single_rss(rsshdu, wrange, crange=None, selection=None, include_sky=False, partial_sky=True):
+#     naxis1 = rsshdu[1].data.shape[1]
+#     if selection is None:
+#         selection = np.arange(rsshdu[1].data.shape[0])
+#     naxis2 = len(selection)
+#     wave = ((np.arange(rsshdu['FLUX'].header['NAXIS1']) - rsshdu['FLUX'].header['CRPIX1'] + 1) *
+#             rsshdu['FLUX'].header['CDELT1'] + rsshdu['FLUX'].header['CRVAL1'])
+#     dw = wave[1]-wave[0]
+#     selwave_extended = (wave >= (min(wrange)-100)) * (wave <= (max(wrange)+100))
+#     wave = wave[selwave_extended]
+#     if 'FLUX_SKYCORR' in rsshdu and partial_sky:
+#         flux_all = rsshdu['FLUX'].data[:, selwave_extended]
+#     elif include_sky:
+#         flux_all = (rsshdu['FLUX'].data + rsshdu['SKY'].data)[:, selwave_extended]
+#     else:
+#         flux_all = rsshdu['FLUX'].data[:, selwave_extended]
+#     errors_all = rsshdu["IVAR"].data[:, selwave_extended]
+#     if 'MASK' in rsshdu:
+#         mask_all = rsshdu["MASK"].data[:, selwave_extended]
+#     else:
+#         mask_all = np.zeros_like(flux_all)
+#
+#     selwave = (wave >= wrange[0]) * (wave <= wrange[1])
+#     cwave = np.mean(wave[selwave])
+#     cwave1 = np.nan
+#
+#     selwavemask = np.tile(selwave, (naxis2, 1))
+#
+#     nbadpix = np.nansum(mask_all[:,selwave] == 1, axis=1)
+#     nallpix = np.nansum(selwave)
+#     rec_badrows = nbadpix/nallpix > 0.5
+#     # Replace NaN and zero values to median
+#     rec_finite = np.zeros_like(flux_all, dtype=bool)
+#     rec_finite[selection, :] = True
+#     rec_finite = rec_finite & (mask_all != 1) & (flux_all != 0)
+#     flux_all[~rec_finite] = np.nan
+#     flux_all_med = median_filter(flux_all, (21, 1))
+#     rec_med_upd = ~np.isfinite(flux_all_med)
+#     flux_all_med1 = median_filter(flux_all_med, (1, 21))
+#     flux_all_med[rec_med_upd] = flux_all_med1[rec_med_upd]
+#     flux_all[~rec_finite] = flux_all_med[~rec_finite]
+#     rssmasked = flux_all[selection] * selwavemask
+#     errormasked = errors_all[selection] * selwavemask
+#     rssmasked[rssmasked == 0] = np.nan
+#
+#     flux_rss = np.nansum(rssmasked, axis=1)*dw
+#     error_rss = np.nansum(errormasked**2, axis=1)*dw**2
+#
+#     nselpix = np.sum(np.isfinite(rssmasked), axis=1)
+#     nselpix1 = np.zeros_like(nselpix)
+#
+#     if len(wrange) == 4:
+#         selwave1 = ((wave >= wrange[2]) * (wave <= wrange[3]))
+#         nbadpix = np.nansum(mask_all[:,selwave1] == 1, axis=1)
+#         nallpix = np.nansum(selwave1)
+#         rec_badrows = rec_badrows & (nbadpix / nallpix > 0.5)
+#
+#         cwave1 = np.mean(wave[selwave1])
+#         selwavemask = np.tile(selwave1, (naxis2, 1))
+#         rssmasked = flux_all[selection] * selwavemask
+#         errormasked = errors_all[selection] * selwavemask
+#         rssmasked[rssmasked == 0] = np.nan
+#         flux_rss += (np.nansum(rssmasked, axis=1)*dw)
+#         error_rss += (np.nansum(errormasked ** 2, axis=1)*dw**2)
+#         nselpix1 = np.sum(np.isfinite(rssmasked), axis=1)
+#
+#     # Optional continuum subtraction
+#     if crange is not None and (len(crange) >= 2):
+#         cselwave = (wave >= crange[0]) * (wave <= crange[1])
+#
+#         if len(crange) == 2:
+#             cflux = np.nanmedian(flux_all[selection, cselwave], axis=1)
+#             flux_rss -= (cflux * nselpix * dw)
+#             flux_rss -= (cflux * nselpix1 * dw)
+#         else:
+#             cselwave1 = (wave >= crange[2]) * (wave <= crange[3])
+#             for cur_ind, cur_spec in enumerate(flux_all[selection]):
+#                 mask_fit = np.isfinite(cur_spec) & (cselwave | cselwave1)
+#                 if np.sum(mask_fit) >= 5:
+#                     res = np.polyfit(wave[mask_fit], cur_spec[mask_fit], 1)
+#                     p = np.poly1d(res)
+#                     flux_rss[cur_ind] -= (p(cwave) * nselpix[cur_ind] * dw)
+#                     if np.isfinite(cwave1):
+#                         flux_rss[cur_ind] -= (p(cwave1) * nselpix1[cur_ind] * dw)
+#
+#     flux_rss[(flux_rss == 0) | rec_badrows] = np.nan
+#     return flux_rss, np.sqrt(error_rss)
+#
+#
+# def fit_cur_spec(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10., 10.),
+#                  ax=None, return_plot_data=False, subtract_lsf=True, multicomp=False):
+#     spectrum, errors, lsf = data
+#     rec = np.flatnonzero(np.isfinite(spectrum) & (spectrum != 0) &
+#                          np.isfinite(errors) & (np.isfinite(lsf)) & (lsf > 0) & np.isfinite(wave))  # & (errors > 0)
+#     if len(rec) < 10:
+#         if return_plot_data:
+#             return [np.nan]*len(lines), [np.nan]*len(lines), [np.nan]*len(lines), np.nan, [np.nan]*len(lines), np.nan, np.nan, np.nan, None
+#         else:
+#             return [np.nan] * len(lines), [np.nan]*len(lines), [np.nan]*len(lines), np.nan, [np.nan] * len(lines), np.nan, np.nan, np.nan
+#
+#     spectrum = spectrum[rec]
+#     errors = errors[rec]
+#     lsf = lsf[rec]
+#     wave = wave[rec]
+#     fitter = fitting.LevMarLSQFitter(calc_uncertainties=True)
+#     g_init = None
+#     cont = np.nanmin(spectrum)
+#     max_ampl = np.nanmax(spectrum) - cont
+#     gaussians = {}
+#     mean_std = np.nanmedian(lsf/2.35428)
+#     for l_id, l in enumerate(lines):
+#         gaussians[l_id] = models.Gaussian1D(stddev=mean_std, amplitude=max_ampl, mean=l*(1+velocity/2.998e5))
+#         gaussians[l_id].amplitude.bounds = (0, 1.1*abs(max_ampl))
+#         gaussians[l_id].stddev.bounds = (mean_std*0.6, mean_std*5.)
+#         if mean_bounds is not None:
+#             gaussians[l_id].mean.bounds = (l+mean_bounds[0], l+mean_bounds[1])
+#         if g_init is None:
+#             g_init = gaussians[l_id]
+#         else:
+#             g_init += gaussians[l_id]
+#
+#     nz = len(spectrum)
+#     rec_spec_cont = (wave < wave[int(nz / 3) + 1]) | (wave > wave[int(2 * nz / 3) + 1])
+#     spec_cont = spectrum[rec_spec_cont]
+#     const_model = models.Const1D(np.nanmedian(spec_cont))
+#     g_init += const_model
+#
+#     def tie_std(model):
+#         return model.stddev_0
+#
+#     l_id = 1
+#     if len(lines) > 1:
+#         if not multicomp:
+#             t1 = lambda model: (model.mean_0 * lines[1]/lines[0])
+#             gaussians[l_id].mean.tied = t1
+#             gaussians[l_id].stddev.tied = tie_std
+#         l_id += 1
+#     if len(lines) > 2:
+#         if not multicomp:
+#             t2 = lambda model: (model.mean_0 * lines[2] / lines[0])
+#             gaussians[l_id].mean.tied = t2
+#             gaussians[l_id].stddev.tied = tie_std
+#         l_id += 1
+#     if len(lines) > 3:
+#         if not multicomp:
+#             t3 = lambda model: (model.mean_0 * lines[3] / lines[0])
+#             gaussians[l_id].mean.tied = t3
+#             gaussians[l_id].stddev.tied = tie_std
+#
+#     if fix_ratios is not None:
+#         ref_id = np.flatnonzero(np.array(fix_ratios)==1)[0]
+#         for fr_id, fr in enumerate(fix_ratios):
+#             if fr != 1 and fr > 0:
+#                 gaussians[fr_id].amplitude.tied = lambda model: (model.__getattr__(f'amplitude_{ref_id}') * fr)
+#     # const_model.amplitude.fixed = True
+#
+#     try:
+#         weights = 1./(np.abs(errors))
+#         # p = interp1d(wave, spectrum, bounds_error=False)
+#         # p_w = interp1d(wave, weights, bounds_error=False)
+#         # wave_oversampled = np.linspace(wave[0], wave[-1], len(wave)*10)
+#         # spectrum_oversampled = p(wave_oversampled)
+#         # weights_oversampled = p_w(wave_oversampled)
+#         res = fitter(g_init, wave, spectrum, weights=weights)
+#     except fitting.NonFiniteValueError:
+#         if return_plot_data:
+#             return [np.nan]*len(lines), np.nan, np.nan, np.nan, [np.nan]*len(lines), np.nan, np.nan, np.nan, None
+#         else:
+#             return [np.nan] * len(lines), np.nan, np.nan, np.nan, [np.nan] * len(lines), np.nan, np.nan, np.nan
+#     if multicomp:
+#         vel = [(res.__getattr__(f"mean_{l_id}")/lines[0]-1)*2.998e5 for l_id in range(len(lines))]
+#     else:
+#         vel = [(res.__getattr__(f"mean_{l_id}") / lines[l_id] - 1) * 2.998e5 for l_id in range(len(lines))]
+#
+#     if not subtract_lsf:
+#         if multicomp:
+#             disp = [(res.__getattr__(f"stddev_{l_id}")  / lines[0] * 2.998e5) for l_id in range(len(lines))]
+#         else:
+#             disp = [(res.__getattr__(f"stddev_{l_id}") / lines[l_id] * 2.998e5) for l_id in range(len(lines))]
+#     else:
+#         if multicomp:
+#             disp = [(np.sqrt(res.__getattr__(f"stddev_{l_id}") ** 2 - mean_std ** 2) / lines[0] * 2.998e5) for l_id in range(len(lines))]
+#         else:
+#             disp = [(np.sqrt(res.__getattr__(f"stddev_{l_id}") ** 2 - mean_std ** 2) / lines[l_id] * 2.998e5) for l_id in range(len(lines))]
+#
+#     cont = res.__getattr__(f"amplitude_{len(lines)}").value
+#     fluxes = [res.__getattr__(f"amplitude_{l_id}")*res.__getattr__(f"stddev_{l_id}")*np.sqrt(2 * np.pi) for l_id in range(len(lines))]
+#     if fitter.fit_info['param_cov'] is None:
+#         cov_diag = np.zeros(shape=(len(lines)+3,), dtype=float)
+#         cov_diag[:] = np.nan
+#     else:
+#         cov_diag = np.diag(fitter.fit_info['param_cov'])
+#     fluxes_err = [np.sqrt(cov_diag[0]*res.stddev_0**2 + res.__getattr__(f"amplitude_{0}")**2 * cov_diag[2]) * np.sqrt(2 * np.pi)]
+#     if len(lines)>1:
+#         for l_id in range(len(lines)-1):
+#             fluxes_err.append(np.sqrt(
+#                 cov_diag[3+l_id] * res.__getattr__(f"stddev_{l_id}") ** 2 + res.__getattr__(f"amplitude_{l_id+1}") ** 2 * cov_diag[2]) * np.sqrt(
+#                 2 * np.pi))
+#     v_err = np.sqrt(cov_diag[1])/lines[0]*2.998e5
+#     sigma_err = np.sqrt(cov_diag[2]) / lines[0] * 2.998e5
+#     cont_err = np.sqrt(cov_diag[-1])
+#
+#     if ax is not None:
+#         ax.plot(wave, spectrum, 'k-', label='Obs')
+#         ax.plot(wave, res(wave), 'r--', label=f'Fit')
+#         ax.legend()
+#     if return_plot_data:
+#         plot_data = (wave, spectrum, res(wave))
+#         return fluxes, vel, disp, cont, fluxes_err, v_err, sigma_err, cont_err, plot_data
+#     else:
+#         return fluxes, vel, disp, cont, fluxes_err, v_err, sigma_err, cont_err
+
 
 # =========================================================
 # ======== Run LVM_processing from command line ===========
