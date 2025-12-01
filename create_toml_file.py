@@ -24,8 +24,6 @@ dap_version = '1.2.0'
 dap_local_version = '1.2.0dev'
 drpall_file = os.path.join(os.environ.get('SAS_BASE_DIR'),
                       'sdsswork/lvm/spectro/redux', drp_version, 'drpall-{drp_version}.fits')
-if not os.path.exists(drpall_file):
-    drpall_file = None
 
 def parse_tiles(request, file_save=None, drpall=False):
     try:
@@ -37,7 +35,7 @@ def parse_tiles(request, file_save=None, drpall=False):
         return
 
     if drpall:
-        if drpall_file is None:
+        if not os.path.isfile(drpall_file):
             log.error(f"Cannot access the drpall file at {drpall_file}")
             return
         with fits.open(drpall_file) as hdul:
