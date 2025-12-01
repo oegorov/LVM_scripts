@@ -23,7 +23,7 @@ drp_version = '1.2.0'
 dap_version = '1.2.0'
 dap_local_version = '1.2.0dev'
 drpall_file = os.path.join(os.environ.get('SAS_BASE_DIR'),
-                      'sdsswork/lvm/spectro/redux', drp_version, 'drpall-{drp_version}.fits')
+                      'sdsswork/lvm/spectro/redux', drp_version, f'drpall-{drp_version}.fits')
 
 def parse_tiles(request, file_save=None, drpall=False):
     try:
