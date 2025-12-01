@@ -38,6 +38,7 @@ def parse_tiles(request, file_save=None, drpall=False):
 
     if drpall:
         if drpall_file is None:
+            log.error(f"Cannot access the drpall file at {drpall_file}")
             return
         with fits.open(drpall_file) as hdul:
             all_frames = Table.read(hdul[1])
