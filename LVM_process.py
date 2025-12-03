@@ -1577,7 +1577,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                     or mode == 'single_rss'):
                 f_dap = os.path.join(cur_wdir, 'dap_output', f"{cur_obj.get('name')}_all_RSS.dap.fits.gz")
                 f_rss = os.path.join(cur_wdir, f"{cur_obj['name']}_all_RSS.fits")
-                f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.txt")
+                f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.fits")
             elif ((config['imaging'].get('use_binned_rss_file') or (mode == 'binned'))
                   and config.get('binning') is not None):
                 bin_line = config['binning'].get('line')
@@ -1594,7 +1594,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                      f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}"
                                      f"{suffix_out.replace('.fits', '.dap.fits.gz')}")
                 f_rss = os.path.join(cur_wdir, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
-                f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
+                f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.fits")
 
             elif mode == 'extracted':
                 suffix_out = config['extraction'].get('file_output_suffix')
@@ -1605,10 +1605,10 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                      f"{suffix_out.replace('.fits', '.dap.fits.gz')}")
                 f_rss = os.path.join(cur_wdir, f"{cur_obj.get('name')}{suffix_out}")
                 f_tab_summary = os.path.join(cur_wdir,
-                                             f"{cur_obj.get('name')}_extracted_dap.txt")
+                                             f"{cur_obj.get('name')}_extracted_dap.fits")
 
         else:
-            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
+            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.fits")
 
         dtypes = [float]*(len(dap_results_correspondence)*6+5)
         dtypes[2] = str
@@ -1616,7 +1616,31 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
         for kw in dap_results_correspondence.keys():
             names.extend([kw+"_flux", kw+"_fluxerr", kw+"_vel", kw+"_velerr",kw+"_disp", kw+"_disperr"])
 
-        tab_summary = Table(data=None, names=names,
+
+        if not config['imaging'].get('override_flux_table'):
+            if os.path.isfile(f_tab_summary):
+                existing_table = f_tab_summary
+            elif os.path.isfile(f_tab_summary.replace('.fits', '.txt')):
+                existing_table = f_tab_summary.replace('.fits', '.txt')
+            else:
+                existing_table = None
+            if existing_table is not None:
+                log.warning("Use existing table with flux measurements. "
+                            "Information about existing fibers won't be changed, but the fluxes will be updated when needed")
+                if f_tab_summary.endswith('.txt'):
+                    tab_summary = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
+                                         converters={'id': str}
+                                         )
+                else:
+                    tab_summary = Table.read(f_tab_summary, format='fits',
+                                             converters={'id': str}
+                                             )
+                tab_summary['id'] = np.char.strip(tab_summary['id'])
+            else:
+                tab_summary = Table(data=None, names=names,
+                                    dtype=dtypes)
+        else:
+            tab_summary = Table(data=None, names=names,
                             dtype=dtypes)
 
         if config['imaging'].get('save_hist_dap'):
@@ -1810,7 +1834,22 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                              [kw+"_flux", kw+"_fluxerr", kw+"_vel",
                                                               kw+"_velerr", kw+"_disp", kw+"_disperr"])
 
-                    tab_summary = vstack([tab_summary, cur_table_summary])
+                    # Add a key column for join
+                    tab_summary.add_index('id')
+                    cur_table_summary.add_index('id')
+
+                    # Outer join: keep all IDs
+                    merged = tab_summary.join(cur_table_summary, join_type='outer', keys='id',
+                                              table_names=('old', 'new'))
+                    result = tab_summary.copy(copy_data=False)
+                    for col in tab_summary.colnames:
+                        old = merged[col + '_old']
+                        new = merged[col + '_new']
+
+                        # If new value is masked (missing), fall back to old
+                        result[col] = new.filled(old)
+                    tab_summary = result
+                    # tab_summary = vstack([tab_summary, cur_table_summary])
 
                     if config['imaging'].get('save_hist_dap'):
                         if nregs_hist_done >= 6:
@@ -1851,7 +1890,8 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
         # if config['imaging'].get('use_binned_rss_file') or (mode == 'binned'):
         #     tab_summary.add_column(Column(np.array([int(str(v).split('.')[1]) for v in tab_summary['id']]),
         #                                   name='binnum'))
-        tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+        # tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+        tab_summary.write(f_tab_summary, overwrite=True, format='fits')
         fix_permission(f_tab_summary)
     return status_out
 
@@ -2040,7 +2080,7 @@ def process_all_rss(config, w_dir=None):
 
         if not config['imaging'].get('override_flux_table') and os.path.isfile(f_tab_summary):
             log.warning("Use existing table with flux measurements. "
-                        "Information about fibers won't change, but the fluxes will be updated when needed")
+                        "Information about existing fibers won't be changed, but the fluxes will be updated when needed")
         else:
             tab_summary = Table(data=None, names=['fib_ra', 'fib_dec', 'ra_round', 'dec_round',
                                                   'sourceid', 'fluxcorr_b','fluxcorr_r','fluxcorr_z',
