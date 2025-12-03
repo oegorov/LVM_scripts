@@ -1627,14 +1627,12 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
             if existing_table is not None:
                 log.warning("Use existing table with flux measurements. "
                             "Information about existing fibers won't be changed, but the fluxes will be updated when needed")
-                if f_tab_summary.endswith('.txt'):
-                    tab_summary = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
+                if existing_table.endswith('.txt'):
+                    tab_summary = Table.read(existing_table, format='ascii.fixed_width_two_line',
                                          converters={'id': str}
                                          )
                 else:
-                    tab_summary = Table.read(f_tab_summary, format='fits',
-                                             converters={'id': str}
-                                             )
+                    tab_summary = Table.read(existing_table, format='fits')
                 tab_summary['id'] = np.char.strip(tab_summary['id'])
             else:
                 tab_summary = Table(data=None, names=names,
