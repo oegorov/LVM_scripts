@@ -1837,7 +1837,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                     cur_table_summary.add_index('id')
 
                     # Outer join: keep all IDs
-                    merged = tab_summary.join(cur_table_summary, join_type='outer', keys='id',
+                    merged = join(tab_summary, cur_table_summary, join_type='outer', keys='id',
                                               table_names=('old', 'new'))
                     result = tab_summary.copy(copy_data=False)
                     for col in tab_summary.colnames:
