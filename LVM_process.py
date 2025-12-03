@@ -345,10 +345,14 @@ def LVM_process(config_filename=None, output_dir=None):
                 continue
             if config['imaging'].get('use_single_rss_file'):
                 if config['imaging'].get('use_dap'):
-                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.txt")
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.fits")
+                    if not os.path.isfile(file_fluxes):
+                        file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS_dap')
                 else:
-                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.txt")
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.fits")
+                    if not os.path.isfile(file_fluxes):
+                        file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS')
                 line_list = config['imaging'].get('lines')
                 filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
@@ -382,10 +386,14 @@ def LVM_process(config_filename=None, output_dir=None):
                 f_binmap = os.path.join(cur_wdir, maps_source,
                                         f"{cur_obj.get('name')}_{pxscale_bin}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
                 if config['imaging'].get('use_dap'):
-                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.fits")
+                    if not os.path.isfile(file_fluxes):
+                        file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS_dap')
                 else:
-                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.fits")
+                    if not os.path.isfile(file_fluxes):
+                        file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS')
                 line_list = config['imaging'].get('lines')
                 if (not os.path.isfile(file_fluxes)) or (not os.path.isfile(f_binmap)):
@@ -396,12 +404,16 @@ def LVM_process(config_filename=None, output_dir=None):
                 log.error("'binning' block is not present. Exit.")
                 return
             elif config['imaging'].get('use_dap'):
-                file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
+                file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.fits")
+                if not os.path.isfile(file_fluxes):
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
                 cur_wdir = os.path.join(cur_wdir, 'maps_dap')
                 line_list = dap_results_correspondence.keys()
                 filter_sn = None
             else:
-                file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+                file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.fits")
+                if not os.path.isfile(file_fluxes):
+                    file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
                 cur_wdir = os.path.join(cur_wdir, 'maps')
                 line_list = config['imaging'].get('lines')
                 filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
@@ -1832,21 +1844,15 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                              [kw+"_flux", kw+"_fluxerr", kw+"_vel",
                                                               kw+"_velerr", kw+"_disp", kw+"_disperr"])
 
-                    # Add a key column for join
-                    tab_summary.add_index('id')
-                    cur_table_summary.add_index('id')
-
                     # Outer join: keep all IDs
                     merged = join(tab_summary, cur_table_summary, join_type='outer', keys='id',
                                               table_names=('old', 'new'))
-                    result = tab_summary.copy(copy_data=False)
                     for col in tab_summary.colnames:
                         old = merged[col + '_old']
                         new = merged[col + '_new']
 
                         # If new value is masked (missing), fall back to old
-                        result[col] = new.filled(old)
-                    tab_summary = result
+                        tab_summary[col] = new.filled(old)
                     # tab_summary = vstack([tab_summary, cur_table_summary])
 
                     if config['imaging'].get('save_hist_dap'):
@@ -2074,7 +2080,7 @@ def process_all_rss(config, w_dir=None):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
             continue
-        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.fits")
 
         if not config['imaging'].get('override_flux_table') and os.path.isfile(f_tab_summary):
             log.warning("Use existing table with flux measurements. "
@@ -2233,20 +2239,26 @@ def process_all_rss(config, w_dir=None):
             else:
                 log.info(f"All {len(tab_summary)} fibers are unique")
             tab_summary.remove_columns(['ra_round','dec_round'])
-            tab_summary.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+            tab_summary.write(f_tab_summary, overwrite=True, format='fits')
             fix_permission(f_tab_summary)
 
-        table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
-                                  converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
-                                              'fluxcorr_z': str, 'vhel_corr': str, 'bgr': str})
-
+        if f_tab_summary.endswith('.fits') and os.path.isfile(f_tab_summary):
+            table_fluxes = Table.read(f_tab_summary, overwrite=True, format='fits')
+        elif os.path.isfile(f_tab_summary.replace('.fits', '.txt')):
+            table_fluxes = Table.read(f_tab_summary.replace('.fits', '.txt'), format='ascii.fixed_width_two_line',
+                                      converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                                  'fluxcorr_z': str, 'vhel_corr': str, 'bgr': str})
+        else:
+            log.error(f"Can't find fluxes table {f_tab_summary} for object {cur_obj.get('name')}. Skipping...")
+            statuses.append(False)
+            continue
         table_fluxes, cur_status = analyse_spectra(
             table_fluxes=table_fluxes, mean_bounds=mean_bounds_fitline,
             sysvel=cur_obj.get('velocity'), file_rss=None, config=config,
             single_rss=False, cur_wdir=cur_wdir
         )
         if cur_status:
-            table_fluxes.write(f_tab_summary, overwrite=True, format='ascii.fixed_width_two_line')
+            table_fluxes.write(f_tab_summary, overwrite=True, format='fits')
             fix_permission(f_tab_summary)
         status_out = status_out & cur_status
         statuses.append(status_out)
@@ -2710,7 +2722,10 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         except PermissionError:
             log.error(f"Cannot change permissions for {output_dir}")
 
-    table_fluxes = Table.read(file_fluxes, format='ascii.fixed_width_two_line')
+    if file_fluxes.endswith('.fits'):
+        table_fluxes = Table.read(file_fluxes, format='fits')
+    else:
+        table_fluxes = Table.read(file_fluxes, format='ascii.fixed_width_two_line')
 
     if binmap is not None:
         binmap_head = fits.getheader(binmap)
@@ -3216,7 +3231,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             else:
                 target_sn = float(target_sn)
             f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
-            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
+            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.fits")
         elif extracted:
             if 'extraction' not in config:
                 suffix_out = '_extracted.fits'
@@ -3227,12 +3242,12 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             f_rss = os.path.join(output_dir, cur_obj['name'], version,
                                  f"{cur_obj.get('name')}{suffix_out}")
             f_tab = os.path.join(output_dir, cur_obj['name'], version,
-                                 f"{cur_obj.get('name')}_extracted.txt")
+                                 f"{cur_obj.get('name')}_extracted.fits")
         else:
             if testdap_prefix != "":
                 log.warning("Testing cutted version of the RSS file!!!")
             f_rss = os.path.join(output_dir, cur_obj['name'], version, f"{testdap_prefix}{cur_obj['name']}_all_RSS.fits")
-            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{testdap_prefix}{cur_obj['name']}_fluxes_singleRSS.txt")
+            f_tab = os.path.join(output_dir, cur_obj['name'], version, f"{testdap_prefix}{cur_obj['name']}_fluxes_singleRSS.fits")
         if not os.path.isfile(f_rss):
             log.error(f"File {f_rss} doesn't exist.")
             statuses.append(False)
@@ -3366,8 +3381,16 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
         with fits.open(f_rss) as rss:
             table_fibers = Table(rss['SLITMAP'].data)
 
-            if not config['imaging'].get('override_flux_table') and os.path.isfile(f_tab):
-                table_fluxes = Table.read(f_tab, format='ascii.fixed_width_two_line')
+            if not config['imaging'].get('override_flux_table'):
+                if os.path.isfile(f_tab):
+                    table_fluxes = Table.read(f_tab, format='fits')
+                elif os.path.isfile(f_tab.replace('.fits', '.txt')):
+                    table_fluxes = Table.read(f_tab, format='ascii.fixed_width_two_line')
+                else:
+                    if binned:
+                        table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec', 'binnum'].copy()
+                    else:
+                        table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec'].copy()
             else:
                 if binned:
                     table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec', 'binnum'].copy()
@@ -3412,7 +3435,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
 
 
         if cur_status:
-            table_fluxes.write(f_tab, overwrite=True, format='ascii.fixed_width_two_line')
+            table_fluxes.write(f_tab, overwrite=True, format='fits')
             fix_permission(f_tab)
         status_out = status_out & cur_status
         statuses.append(status_out)
@@ -3527,17 +3550,17 @@ def bin_rss(config, w_dir=None):
             statuses.append(False)
             continue
         if config['imaging'].get('use_single_rss_file'):
-            tmpname = f"{cur_obj.get('name')}_fluxes_singleRSS.txt"
-            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.txt")
+            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.fits")
         else:
-            tmpname = f"{cur_obj.get('name')}_fluxes.txt"
-            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.fits")
         if not os.path.isfile(f_tab_summary):
-            log.error(f"Table with the results of the RSS analysis doesn't exist ({tmpname}). "
-                      f"Anylise_rss step must be run before the binning spectra. "
-                      f"Can't proceed with object {cur_obj.get('name')}.")
-            statuses.append(False)
-            continue
+            f_tab_summary = f_tab_summary.replace(".fits", ".txt")
+            if not os.path.isfile(f_tab_summary):
+                log.error(f"Table with the results of the RSS analysis doesn't exist ({os.path.basename(f_tab_summary)}). "
+                          f"Anylise_rss step must be run before the binning spectra. "
+                          f"Can't proceed with object {cur_obj.get('name')}.")
+                statuses.append(False)
+                continue
         log.info(f"Performing voronoi binning for object {cur_obj.get('name')}. "
                  f"Target SN={target_sn} in {bin_line} line.")
         f_binmap = os.path.join(cur_wdir, map_source,
@@ -3618,9 +3641,12 @@ def bin_rss(config, w_dir=None):
                 tab_summary_bins = Table(hdu[1].data)
 
 
-        tab = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
-                         converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
-                                     'fluxcorr_z': str, 'vhel_corr': str})
+        if f_tab_summary.endswith('fits'):
+            tab = Table.read(f_tab_summary, format='fits')
+        else:
+            tab = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
+                             converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                         'fluxcorr_z': str, 'vhel_corr': str})
         wcs = WCS(header)
         radec = SkyCoord(ra=tab['fib_ra'], dec=tab['fib_dec'], unit=('degree', 'degree'))
         tab_x, tab_y = wcs.world_to_pixel(radec)
@@ -3632,7 +3658,10 @@ def bin_rss(config, w_dir=None):
             tab.add_column(binnum_fibers, name='binnum')
         else:
             tab['binnum'] = binnum_fibers
-        tab.write(f_tab_summary, format='ascii.fixed_width_two_line', overwrite=True)
+        if f_tab_summary.endswith('fits'):
+            tab.write(f_tab_summary, format='fits', overwrite=True)
+        else:
+            tab.write(f_tab_summary, format='ascii.fixed_width_two_line', overwrite=True)
         fix_permission(f_tab_summary)
 
         #==== Extraction of the spectrum (modified from extract_spectra_ds9)
@@ -3817,15 +3846,17 @@ def extract_spectra_ds9(config, w_dir=None):
                         "Table with the analysis results of the original RSS frames need to be available! "
                         "Check if it is there and have a correct version!")
         if not config['imaging'].get('use_dap'):
-            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.fits")
         else:
-            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.txt")
+            f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.fits")
         if not os.path.isfile(f_tab_summary):
-            log.error(f"Table with the results of the RSS analysis doesn't exist (searched for {f_tab_summary}). "
-                      f"Anylise_rss step must be run before the spectra extraction. "
-                      f"Can't proceed with object {cur_obj.get('name')}.")
-            statuses.append(False)
-            continue
+            f_tab_summary = f_tab_summary.replace('.fits', '.txt')
+            if not os.path.isfile(f_tab_summary):
+                log.error(f"Table with the results of the RSS analysis doesn't exist (searched for {f_tab_summary}). "
+                          f"Anylise_rss step must be run before the spectra extraction. "
+                          f"Can't proceed with object {cur_obj.get('name')}.")
+                statuses.append(False)
+                continue
         f_ds9 = os.path.join(cur_wdir, f"{cur_obj.get('name')}{config['extraction'].get('file_ds9_suffix')}")
         f_ds9_mask = os.path.join(cur_wdir, f"{cur_obj.get('name')}{config['extraction'].get('mask_ds9_suffix')}")
         f_out = os.path.join(cur_wdir, f"{cur_obj.get('name')}{suffix_out}")
@@ -3841,9 +3872,12 @@ def extract_spectra_ds9(config, w_dir=None):
             reg_mask = Regions.read(f_ds9_mask, format='ds9')
             log.info(f"Region mask for {cur_obj.get('name')} is used")
 
-        table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
-                                  converters={'sourceid': str, 'id': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
-                                              'fluxcorr_z': str, 'fluxcorr': str, 'vhel_corr': str})
+        if f_tab_summary.endswith('.fits'):
+            table_fluxes = Table.read(f_tab_summary, format='fits')
+        else:
+            table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
+                                      converters={'sourceid': str, 'id': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
+                                                  'fluxcorr_z': str, 'fluxcorr': str, 'vhel_corr': str})
 
         correct_vel_line = config['extraction'].get('correct_vel_line')
         if not correct_vel_line:
@@ -4169,14 +4203,18 @@ def reconstruct_cube(config, w_dir=None):
             log.error(f"Work directory does not exist ({cur_wdir}). Can't proceed with object {cur_obj.get('name')}.")
             statuses.append(False)
             continue
-        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.txt")
+        f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.fits")
         if not os.path.isfile(f_tab_summary):
-            log.error(f"File {f_tab_summary} does not exist. Have you run 'analyse_rss' step first?")
-            statuses.append(False)
-            continue
-
-        table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
-                                  converters={'sourceid': str, 'fluxcorr': str, 'vhel_corr': str})
+            f_tab_summary=f_tab_summary.replace('.fits', '.txt')
+            if not os.path.isfile(f_tab_summary):
+                log.error(f"File {f_tab_summary} does not exist. Have you run 'analyse_rss' step first?")
+                statuses.append(False)
+                continue
+        if f_tab_summary.endswith('fits'):
+            table_fluxes = Table.read(f_tab_summary, format='fits')
+        else:
+            table_fluxes = Table.read(f_tab_summary, format='ascii.fixed_width_two_line',
+                                      converters={'sourceid': str, 'fluxcorr': str, 'vhel_corr': str})
 
         vel = cur_obj.get('velocity')
         ras = table_fluxes['fib_ra']
