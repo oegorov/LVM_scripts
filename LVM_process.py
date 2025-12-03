@@ -141,7 +141,7 @@ dap_results_correspondence = {
     'OIII5007_p': 5006.84,
     "OII3727_p": 3726.03, "OII3729_p": 3728.82, "Hg_p": 4340.49,
     'OI_p': 6300.3,
-    'HeII_p': 4685.68, "NeIII3869_p": 3967.46, 'OIII4363_p': 4363.21, "NII5755_p": 5754.59, "SIII6312_p": 6312.06,
+    # 'HeII_p': 4685.68, "NeIII3869_p": 3967.46, 'OIII4363_p': 4363.21, "NII5755_p": 5754.59, "SIII6312_p": 6312.06,
     "Ha_mom0": 'Halpha_6562.85', 'Hb_mom0': 'Hbeta_4861.36', 'SII6717_mom0': '[SII]_6716.44', "SII6731_mom0": '[SII]_6730.82',
     'NII6584_mom0': '[NII]_6583.45', 'SIII9532_mom0': '[SIII]_9531.1',
     'OIII5007_mom0': '[OIII]_5006.84',
@@ -2808,6 +2808,8 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         log.error('Nothing to show.')
         return False
 
+    header = wcs_out.to_header()
+
     if binmap is None:
         if len(values.shape) == 1:
             values = values.reshape((-1, 1))
@@ -2817,9 +2819,25 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
             variance = (values_errs/np.nanmedian(values_errs, axis=0))**2
         img_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values,
                                    r_lim=r_lim, sigma=sigma, masks=masks, variance=variance)
+
+        for ind in range(img_arr.shape[2]):
+            outfile_suffix = names_out[ind]
+            if do_median_masking:
+                img_arr[:, :, ind] = median_filter(img_arr[:, :, ind], (11, 11))
+            f_out = os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits")
+            fits.writeto(f_out,
+                         data=img_arr[:, :, ind], header=header, overwrite=True)
+            fix_permission(f_out)
+
         if values_errs is not None:
             err_arr = shepard_convolve(wcs_out, shape_out, ra_fibers=ras, dec_fibers=decs, show_values=values_errs,
                                        r_lim=r_lim, sigma=sigma, masks=masks_errs, is_error=True)
+            for ind in range(err_arr.shape[2]):
+                outfile_suffix = names_out_errs[ind]
+                f_out = os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits")
+                fits.writeto(f_out,
+                             data=err_arr[:, :, ind], header=header, overwrite=True)
+                fix_permission(f_out)
     else:
         img_arr = np.empty(shape=(shape_out[0], shape_out[1], values.shape[1]), dtype=np.float32)
         err_arr = np.empty(shape=(shape_out[0], shape_out[1], values.shape[1]), dtype=np.float32)
@@ -2839,22 +2857,21 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
             img_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values[bin_ind, :])[None, None, :]
             err_arr[yybin.ravel()[rec], xxbin.ravel()[rec], :] = (values_errs[bin_ind, :])[None, None, :]
 
-    header = wcs_out.to_header()
-    for ind in range(img_arr.shape[2]):
-        outfile_suffix = names_out[ind]
-        if do_median_masking:
-            img_arr[:, :, ind] = median_filter(img_arr[:, :, ind], (11, 11))
-        f_out = os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits")
-        fits.writeto(f_out,
-                     data=img_arr[:, :, ind], header=header, overwrite=True)
-        fix_permission(f_out)
-    if values_errs is not None:
-        for ind in range(err_arr.shape[2]):
-            outfile_suffix = names_out_errs[ind]
+        for ind in range(img_arr.shape[2]):
+            outfile_suffix = names_out[ind]
+            if do_median_masking:
+                img_arr[:, :, ind] = median_filter(img_arr[:, :, ind], (11, 11))
             f_out = os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits")
             fits.writeto(f_out,
-                         data=err_arr[:, :, ind], header=header, overwrite=True)
+                         data=img_arr[:, :, ind], header=header, overwrite=True)
             fix_permission(f_out)
+        if values_errs is not None:
+            for ind in range(err_arr.shape[2]):
+                outfile_suffix = names_out_errs[ind]
+                f_out = os.path.join(output_dir, f"{outfile_prefix}_{outfile_suffix}.fits")
+                fits.writeto(f_out,
+                             data=err_arr[:, :, ind], header=header, overwrite=True)
+                fix_permission(f_out)
     return True
 
 
