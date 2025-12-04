@@ -1849,7 +1849,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                               table_names=('old', 'new'))
                     res_tab = Table()
                     for col in tab_summary.colnames:
-                        if col in merged:
+                        if col in merged.colnames:
                             res_tab[col] = merged[col]
                             continue
                         old = merged[col + '_old']
