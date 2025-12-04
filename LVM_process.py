@@ -1844,20 +1844,23 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                              [kw+"_flux", kw+"_fluxerr", kw+"_vel",
                                                               kw+"_velerr", kw+"_disp", kw+"_disperr"])
 
-                    # Outer join: keep all IDs
-                    merged = join(tab_summary, cur_table_summary, join_type='outer', keys='id',
-                                              table_names=('old', 'new'))
-                    res_tab = Table()
-                    for col in tab_summary.colnames:
-                        if col in merged.colnames:
-                            res_tab[col] = merged[col]
-                            continue
-                        old = merged[col + '_old']
-                        new = merged[col + '_new']
-                        # If new value is masked (missing), fall back to old
-                        res_tab[col] = new.filled(old)
-                    tab_summary = res_tab
-                    # tab_summary = vstack([tab_summary, cur_table_summary])
+                    if len(tab_summary) == 0:
+                        tab_summary = cur_table_summary
+                    else:
+                        # Outer join: keep all IDs
+                        merged = join(tab_summary, cur_table_summary, join_type='outer', keys='id',
+                                                  table_names=('old', 'new'))
+                        res_tab = Table()
+                        for col in tab_summary.colnames:
+                            if col in merged.colnames:
+                                res_tab[col] = merged[col]
+                                continue
+                            old = merged[col + '_old']
+                            new = merged[col + '_new']
+                            # If new value is masked (missing), fall back to old
+                            res_tab[col] = new.filled(old)
+                        tab_summary = res_tab
+                        # tab_summary = vstack([tab_summary, cur_table_summary])
 
                     if config['imaging'].get('save_hist_dap'):
                         if nregs_hist_done >= 6:
