@@ -307,7 +307,7 @@ def LVM_process(config_filename=None, output_dir=None):
                 log.info("Skip running DAP and go directly to the results parsing")
             if config['imaging'].get('use_dap'):
                 log.info("Processing DAP results")
-                status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True)
+                status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='extracted')
         elif config['imaging'].get('use_dap'):
             log.info("Processing DAP results")
             status = parse_dap_results(config, w_dir=cur_wdir)
@@ -622,6 +622,90 @@ def create_folders_tree(config, w_dir=None):
         status = False
     return status
 
+def get_nonparametric_kinematics(spectrum, errors, lsf, wave, line_wave, vel_bounds=(-300., 300.),
+                                 n_bootstrap=0, cont_level=None):
+    """
+    Derive non-parametric velocity and velocity dispersion for the given line
+    :param spectrum:
+    :param errors:
+    :param lsf:
+    :param wave:
+    :param line_wave:
+    :param vel_bounds:
+    :param n_bootstrap:
+    :param cont_level: continuum level to subtract before measuring kinematics
+    :return:
+    """
+
+    c = 2.998e5  # km/s
+    rec = np.flatnonzero(np.isfinite(spectrum) & (spectrum != 0) &
+                         np.isfinite(errors) & np.isfinite(wave))
+
+    if len(rec) < 10:
+        return np.nan, np.nan, np.nan, np.nan
+
+    spectrum = spectrum[rec]
+    errors = errors[rec]
+    if lsf is not None:
+        lsf = lsf[rec]
+    wave = wave[rec]
+
+    if cont_level is not None:
+        spectrum -= cont_level
+
+    vel = c * (wave - line_wave) / line_wave
+    vel_mask = (vel >= vel_bounds[0]) & (vel <= vel_bounds[1])
+    vel = vel[vel_mask]
+    spectrum = spectrum[vel_mask]
+    errors = errors[vel_mask]
+    if lsf is not None:
+        vel_res = c * lsf / line_wave / 2.35428  # sigma = FWHM / 2.35428
+        vel_res = vel_res[vel_mask]
+    else:
+        vel_res=[0]
+    if np.sum(spectrum > 0) < 5:
+        return np.nan, np.nan, np.nan, np.nan
+
+    flux = np.trapz(spectrum, vel)
+    if flux <= 0:
+        return np.nan, np.nan, np.nan, np.nan
+    spec_cum = np.cumsum(spectrum) / flux
+    v05 = np.interp(0.05, spec_cum, vel)
+    v50 = np.interp(0.5, spec_cum, vel)
+    v95 = np.interp(0.95, spec_cum, vel)
+    w80 = v95 - v05
+    sigma_np = w80 / 2.563  # for Gaussian sigma = W80 / 2.563
+    vel_disp = np.sqrt(sigma_np**2 - np.median(vel_res)**2)
+
+    if n_bootstrap > 0:
+        v50_arr = []
+        vel_disp_arr = []
+        for i in range(n_bootstrap):
+            rand_spec = spectrum + np.random.normal(0, errors)
+            flux_bs = np.trapz(rand_spec, vel)
+            if flux_bs <= 0:
+                continue
+            spec_cum_bs = np.cumsum(rand_spec) / flux_bs
+            v05_bs = np.interp(0.05, spec_cum_bs, vel)
+            v50_bs = np.interp(0.5, spec_cum_bs, vel)
+            v95_bs = np.interp(0.95, spec_cum_bs, vel)
+            w80_bs = v95_bs - v05_bs
+            sigma_np_bs = w80_bs / 2.563
+            vel_disp_bs = np.sqrt(sigma_np_bs**2 - np.median(vel_res)**2)
+            v50_arr.append(v50_bs)
+            vel_disp_arr.append(vel_disp_bs)
+        if len(v50_arr) > 5:
+            vel_err = np.std(v50_arr)
+            vel_disp_err = np.std(vel_disp_arr)
+        else:
+            vel_err = np.nan
+            vel_disp_err = np.nan
+    else:
+        vel_err = np.nan
+        vel_disp_err = np.nan
+
+    return v50, vel_err, vel_disp, vel_disp_err
+
 
 def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10., 10.),
                        ax=None, return_plot_data=False, subtract_lsf=True, max_n_comp=None, tie_disp=None, tie_vel=None):
@@ -673,7 +757,7 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
     mean_std = np.nanmedian(lsf / 2.35428)
     flux_guess = max_ampl * mean_std * np.sqrt(2*np.pi)
     res = None
-
+    nonparametric_fit = None
     while np.sum(cur_n_comps) <= n_max_lines:
 
         if np.sum(cur_n_comps) == 0:
@@ -756,76 +840,105 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
             res = my_model.fit(spectrum, pars, x=wave, weights=1/errors)
 
         # print(res.redchi, res.chisqr, (np.nansum(errors.ravel()**2)/np.nansum(spectrum.ravel()**2)))
+        if (len(lines) == 1) and (np.sum(cur_n_comps) == len(lines)) and (np.sum(cur_n_comps) < n_max_lines):
+            # check if velocities or dispersions are not in agreement with those from non-parametric fit
+            # THIS WORKS ONLY FOR SINGLE LINE FITTING
+            nonparametric_fit = get_nonparametric_kinematics(spectrum, errors, None, wave, lines[0],
+                                                             cont_level=res.params[f'contin_c'].value)
+            if nonparametric_fit is not None and np.all(np.isfinite(nonparametric_fit)):
+                vel_np, vel_err_np, disp_np, disp_err_np = nonparametric_fit
+                vel_fit = (res.params[f'gaus00_center'].value / lines[0] - 1) * 2.998e5
+                disp_fit = res.params[f'gaus00_sigma'].value / lines[0] * 2.998e5
+                vel_fit_err = (res.params[f'gaus00_center'].stderr / lines[0]) * 2.998e5
+                disp_fit_err = (res.params[f'gaus00_sigma'].stderr / lines[0]) * 2.998e5
+                if (np.abs(vel_fit - vel_np) > (2 * max(vel_err_np, vel_fit_err))) or \
+                   (np.abs(disp_fit - disp_np) > (2 * max(disp_err_np, disp_fit_err))):
+                    continue
         if (res.redchi > 1) and (np.sum(cur_n_comps) < n_max_lines):
             continue
-        else:
+        break
+    if not subtract_lsf:
+        disp = [np.array(res.params[f'gaus{l_id}{0}_sigma'].value).astype(float)/lines[l_id]*2.998e5 for l_id in range(len(lines))]
+    else:
+        disp = [np.sqrt(np.array(res.params[f'gaus{l_id}{0}_sigma'].value).astype(float)**2 - mean_std**2)/ lines[l_id] * 2.998e5 for l_id in range(len(lines))]
+
+    disp_err = [(np.array(res.params[f'gaus{l_id}{0}_sigma'].stderr).astype(float) / lines[l_id]) * 2.998e5 for l_id in
+                range(len(lines))]
+    vel = [(np.array(res.params[f'gaus{l_id}{0}_center'].value).astype(float) / lines[l_id] - 1) * 2.998e5 for l_id in
+           range(len(lines))]
+    vel_err = [(np.array(res.params[f'gaus{l_id}{0}_center'].stderr).astype(float) / lines[l_id]) * 2.998e5 for l_id in
+               range(len(lines))]
+    fluxes = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].value).astype(float) * 1e-16 / np.pi / (fiber_d / 2) ** 2
+              for l_id in range(len(lines))]
+    fluxes_err = [
+        np.array(res.params[f'gaus{l_id}{0}_amplitude'].stderr).astype(float) * 1e-16 / np.pi / (fiber_d / 2) ** 2 for
+        l_id in range(len(lines))]
+    cont = [np.array(res.params[f'contin_c'].value).astype(float) * 1e-16 / np.pi / (fiber_d / 2) ** 2] * len(lines)
+    cont_err = [np.array(res.params[f'contin_c'].stderr).astype(float) * 1e-16 / np.pi / (fiber_d / 2) ** 2] * len(
+        lines)
+
+    other_comps = [None, None]
+    if max(max_n_comp) > 1:
+        other_comps[0] = {
+            'disp': [np.nan] * len(lines),
+            'disp_err': [np.nan] * len(lines),
+            'vel': [np.nan] * len(lines),
+            'vel_err': [np.nan] * len(lines),
+            'fluxes': [np.nan] * len(lines),
+            'fluxes_err': [np.nan] * len(lines),
+        }
+    if max(max_n_comp) > 2:
+        other_comps[1] = {
+            'disp': [np.nan] * len(lines),
+            'disp_err': [np.nan] * len(lines),
+            'vel': [np.nan] * len(lines),
+            'vel_err': [np.nan] * len(lines),
+            'fluxes': [np.nan] * len(lines),
+            'fluxes_err': [np.nan] * len(lines),
+        }
+    for ind in range(2):
+        if other_comps[ind] is None:
+            continue
+        rec = np.flatnonzero(cur_n_comps == (ind + 2))
+        for l_id in rec:
             if not subtract_lsf:
-                disp = [np.array(res.params[f'gaus{l_id}{0}_sigma'].value).astype(float)/lines[l_id]*2.998e5 for l_id in range(len(lines))]
+                other_comps[ind]['disp'][l_id] = np.array(res.params[f'gaus{l_id}{ind + 1}_sigma'].value).astype(
+                    float) / lines[l_id] * 2.998e5
             else:
-                disp = [np.sqrt(np.array(res.params[f'gaus{l_id}{0}_sigma'].value).astype(float)**2 - mean_std**2)/ lines[l_id] * 2.998e5 for l_id in range(len(lines))]
+                other_comps[ind]['disp'][l_id] = np.sqrt(
+                    np.array(res.params[f'gaus{l_id}{ind + 1}_sigma'].value).astype(float) ** 2 - mean_std ** 2) / \
+                                                 lines[l_id] * 2.998e5
+            other_comps[ind]['disp_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind + 1}_sigma'].stderr).astype(
+                float) / lines[l_id]) * 2.998e5
 
-            disp_err = [(np.array(res.params[f'gaus{l_id}{0}_sigma'].stderr).astype(float) / lines[l_id]) * 2.998e5 for l_id in range(len(lines))]
-            vel = [(np.array(res.params[f'gaus{l_id}{0}_center'].value).astype(float) / lines[l_id] - 1) * 2.998e5 for l_id in range(len(lines))]
-            vel_err = [(np.array(res.params[f'gaus{l_id}{0}_center'].stderr).astype(float) / lines[l_id]) * 2.998e5 for l_id in range(len(lines))]
-            fluxes = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2 for l_id in range(len(lines))]
-            fluxes_err = [np.array(res.params[f'gaus{l_id}{0}_amplitude'].stderr).astype(float)*1e-16/np.pi/(fiber_d/2)**2 for l_id in range(len(lines))]
-            cont = [np.array(res.params[f'contin_c'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2]*len(lines)
-            cont_err = [np.array(res.params[f'contin_c'].stderr).astype(float)*1e-16/np.pi/(fiber_d/2)**2]*len(lines)
+            other_comps[ind]['vel'][l_id] = (np.array(res.params[f'gaus{l_id}{ind + 1}_center'].value).astype(float) /
+                                             lines[l_id] - 1) * 2.998e5
+            other_comps[ind]['vel_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind + 1}_center'].stderr).astype(
+                float) / lines[l_id]) * 2.998e5
+            other_comps[ind]['fluxes'][l_id] = np.array(res.params[f'gaus{l_id}{ind + 1}_amplitude'].value).astype(
+                float) * 1e-16 / np.pi / (fiber_d / 2) ** 2
+            other_comps[ind]['fluxes_err'][l_id] = np.array(res.params[f'gaus{l_id}{ind + 1}_amplitude'].stderr).astype(
+                float) * 1e-16 / np.pi / (fiber_d / 2) ** 2
 
-            other_comps = [None, None]
-            if max(max_n_comp) > 1:
-                other_comps[0] = {
-                    'disp': [np.nan]*len(lines),
-                    'disp_err': [np.nan] * len(lines),
-                    'vel': [np.nan] * len(lines),
-                    'vel_err': [np.nan] * len(lines),
-                    'fluxes': [np.nan] * len(lines),
-                    'fluxes_err': [np.nan] * len(lines),
-                }
-            if max(max_n_comp) > 2:
-                    other_comps[1] = {
-                        'disp': [np.nan] * len(lines),
-                        'disp_err': [np.nan] * len(lines),
-                        'vel': [np.nan] * len(lines),
-                        'vel_err': [np.nan] * len(lines),
-                        'fluxes': [np.nan] * len(lines),
-                        'fluxes_err': [np.nan] * len(lines),
-                    }
-            for ind in range(2):
-                if other_comps[ind] is None:
-                    continue
-                rec = np.flatnonzero(cur_n_comps == (ind+2))
-                for l_id in rec:
-                    if not subtract_lsf:
-                        other_comps[ind]['disp'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].value).astype(float)/lines[l_id]*2.998e5
-                    else:
-                        other_comps[ind]['disp'][l_id] = np.sqrt(np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].value).astype(float)**2-mean_std**2)/ lines[l_id] * 2.998e5
-                    other_comps[ind]['disp_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_sigma'].stderr).astype(float) / lines[l_id]) * 2.998e5
-
-                    other_comps[ind]['vel'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_center'].value).astype(float) / lines[l_id] - 1) * 2.998e5
-                    other_comps[ind]['vel_err'][l_id] = (np.array(res.params[f'gaus{l_id}{ind+1}_center'].stderr).astype(float) / lines[l_id]) * 2.998e5
-                    other_comps[ind]['fluxes'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_amplitude'].value).astype(float)*1e-16/np.pi/(fiber_d/2)**2
-                    other_comps[ind]['fluxes_err'][l_id] = np.array(res.params[f'gaus{l_id}{ind+1}_amplitude'].stderr).astype(float)*1e-16/np.pi/(fiber_d/2)**2
-
-                    if other_comps[ind]['fluxes'][l_id] > fluxes[l_id]:
-                        tmp = np.copy(fluxes[l_id])
-                        fluxes[l_id] = np.copy(other_comps[ind]['fluxes'][l_id])
-                        other_comps[ind]['fluxes'][l_id] = tmp
-                        tmp = np.copy(disp[l_id])
-                        disp[l_id] = np.copy(other_comps[ind]['disp'][l_id])
-                        other_comps[ind]['disp'][l_id] = tmp
-                        tmp = np.copy(vel[l_id])
-                        vel[l_id] = np.copy(other_comps[ind]['vel'][l_id])
-                        other_comps[ind]['vel'][l_id] = tmp
-                        tmp = np.copy(fluxes_err[l_id])
-                        fluxes_err[l_id] = np.copy(other_comps[ind]['fluxes_err'][l_id])
-                        other_comps[ind]['fluxes_err'][l_id] = tmp
-                        tmp = np.copy(vel_err[l_id])
-                        vel_err[l_id] = np.copy(other_comps[ind]['vel_err'][l_id])
-                        other_comps[ind]['vel_err'][l_id] = tmp
-                        tmp = np.copy(disp_err[l_id])
-                        disp_err[l_id] = np.copy(other_comps[ind]['disp_err'][l_id])
-                        other_comps[ind]['disp_err'][l_id] = tmp
+            if other_comps[ind]['fluxes'][l_id] > fluxes[l_id]:
+                tmp = np.copy(fluxes[l_id])
+                fluxes[l_id] = np.copy(other_comps[ind]['fluxes'][l_id])
+                other_comps[ind]['fluxes'][l_id] = tmp
+                tmp = np.copy(disp[l_id])
+                disp[l_id] = np.copy(other_comps[ind]['disp'][l_id])
+                other_comps[ind]['disp'][l_id] = tmp
+                tmp = np.copy(vel[l_id])
+                vel[l_id] = np.copy(other_comps[ind]['vel'][l_id])
+                other_comps[ind]['vel'][l_id] = tmp
+                tmp = np.copy(fluxes_err[l_id])
+                fluxes_err[l_id] = np.copy(other_comps[ind]['fluxes_err'][l_id])
+                other_comps[ind]['fluxes_err'][l_id] = tmp
+                tmp = np.copy(vel_err[l_id])
+                vel_err[l_id] = np.copy(other_comps[ind]['vel_err'][l_id])
+                other_comps[ind]['vel_err'][l_id] = tmp
+                tmp = np.copy(disp_err[l_id])
+                disp_err[l_id] = np.copy(other_comps[ind]['disp_err'][l_id])
+                other_comps[ind]['disp_err'][l_id] = tmp
 
     if ax is not None:
         ax.plot(wave, spectrum, 'k-', label='Obs')
@@ -1617,7 +1730,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                      f"{suffix_out.replace('.fits', '.dap.fits.gz')}")
                 f_rss = os.path.join(cur_wdir, f"{cur_obj.get('name')}{suffix_out}")
                 f_tab_summary = os.path.join(cur_wdir,
-                                             f"{cur_obj.get('name')}_extracted_dap.fits")
+                                             f"{cur_obj.get('name')}_fluxes{suffix_out.split('.')[0]}_dap.fits")
 
         else:
             f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_dap.fits")
@@ -3249,7 +3362,7 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             f_rss = os.path.join(output_dir, cur_obj['name'], version,
                                  f"{cur_obj.get('name')}{suffix_out}")
             f_tab = os.path.join(output_dir, cur_obj['name'], version,
-                                 f"{cur_obj.get('name')}_extracted.fits")
+                                 f"{cur_obj.get('name')}_fluxes{suffix_out}")
         else:
             if testdap_prefix != "":
                 log.warning("Testing cutted version of the RSS file!!!")
@@ -3877,7 +3990,7 @@ def extract_spectra_ds9(config, w_dir=None):
             reg_mask = None
         else:
             reg_mask = Regions.read(f_ds9_mask, format='ds9')
-            log.info(f"Region mask for {cur_obj.get('name')} is used")
+            log.info(f"Region mask for {cur_obj.get('name')} is used: {os.path.basename(f_ds9_mask)}")
 
         if f_tab_summary.endswith('.fits'):
             table_fluxes = Table.read(f_tab_summary, format='fits')
