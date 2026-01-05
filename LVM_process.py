@@ -137,7 +137,8 @@ sigma_clip_value = 2.5 # threshold for sigma clip for combining spectra
 mean_bounds_fitline = (-30, 30) # mean velocity bounds for fitting lines
 
 dap_results_correspondence = {
-    "Ha_p": 6562.85, 'Hb_p': 4861.36, 'SII6717_p': 6716.44, "SII6731_p": 6730.82, 'NII6584_p': 6583.45, 'SIII9532_p': 9531.1,
+    "Ha_p": 6562.85, 'Hb_p': 4861.36, 'SII6717_p': 6716.44, "SII6731_p": 6730.82, 'NII6584_p': 6583.45,
+    'SIII9069_p': 9069.0, 'SIII9532_p': 9531.1,
     'OIII5007_p': 5006.84,
     "OII3727_p": 3726.03, "OII3729_p": 3728.82, "Hg_p": 4340.49,
     'OI_p': 6300.3,
@@ -146,11 +147,20 @@ dap_results_correspondence = {
     'NII6584_mom0': '[NII]_6583.45', 'SIII9532_mom0': '[SIII]_9531.1',
     'OIII5007_mom0': '[OIII]_5006.84',
     "OII3727_mom0": '[OII]_3726.03', "OII3729_mom0": '[OII]_3728.82', "Hg_mom0": 'Hgamma_4340.49',
-    'OI_mom0': '[OI]_6300.3', 'SIII6312_mom0': '[SIII]_6312.06',
-    "HeII_mom0": "HeII_4685.68",
+    'OI6300_mom0': '[OI]_6300.3', 'OI6363_mom0': '[OI]_6363.78', 'SIII6312_mom0': '[SIII]_6312.06',
+    "HeII4686_mom0": "HeII_4685.68",
     "OIII4363_mom0": '[OIII]_4363.21', 'NII5755_mom0': '[NII]_5754.59',
     'SII4068_mom0': '[SII]_4068.6', 'NeIII3869_mom0': '[NeIII]_3868.75',
     'OII7320_mom0': '[OII]_7318.92', 'OII7330_mom0': '[OII]_7329.66', 'ArIII7136_mom0': '[ArIII]_7135.8',
+    'Pa8_mom0': 'HI_9545.97', 'Pa9_mom0': 'HI_9229.02', 'Pa10_mom0': 'HI_9014.91',
+    'ArIII7751_mom0': '[ArIII]_7751.06', 'FeII]9226_mom0': '[FeII]_9226.6',
+    'SIII9069_mom0': '[SIII]_9069.0', 'HeI5876_mom0': 'HeI_5876.0',
+    'HeI7065_mom0': 'HeI_7065.19', 'HeI6678_mom0': 'HeI_6678.15',
+    'ClIII5518_mom0': '[ClIII]_5517.71', #'ClIII5538_mom0': '[ClIII]_5537.89',
+    'FeIII5270_mom0': '[FeIII]_5270.3', 'FeIII4658_mom0': '[FeIII]_4658.1',
+    'ArIV4711_mom0': '[ArIV]_4711.33', 'ArIV4740_mom0': '[ArIV]_4740.2',
+    'Hd_mom0': 'Hdelta_4101.77', 'HeI4471_mom0': 'HeI_4471.48',
+
     # 'stpop_alpha': 'alpha', 'stpop_Av': 'Av', 'stpop_vel': 'sysvel', 'stpop_disp': 'disp',
     # 'stpop_mass': 'log_Mass', 'stpop_z': 'z'
 }
@@ -349,13 +359,15 @@ def LVM_process(config_filename=None, output_dir=None):
                     if not os.path.isfile(file_fluxes):
                         file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS_dap.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS_dap')
+                    line_list = dap_results_correspondence.keys()
+                    filter_sn = None
                 else:
                     file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.fits")
                     if not os.path.isfile(file_fluxes):
                         file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_singleRSS')
-                line_list = config['imaging'].get('lines')
-                filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
+                    line_list = config['imaging'].get('lines')
+                    filter_sn = [l.get('filter_sn') for l in config['imaging'].get('lines')]
             elif config['imaging'].get('use_binned_rss_file') and 'binning' in config:
                 bin_line = config['binning'].get('line')
                 if not bin_line:
@@ -390,16 +402,19 @@ def LVM_process(config_filename=None, output_dir=None):
                     if not os.path.isfile(file_fluxes):
                         file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}_dap.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS_dap')
+                    line_list = dap_results_correspondence.keys()
+                    filter_sn = None
                 else:
                     file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.fits")
                     if not os.path.isfile(file_fluxes):
                         file_fluxes = os.path.join(cur_wdir, f"{cur_obj.get('name')}_binfluxes_{bin_line}_sn{target_sn}.txt")
                     cur_wdir = os.path.join(cur_wdir, 'maps_binnedRSS')
-                line_list = config['imaging'].get('lines')
+                    line_list = config['imaging'].get('lines')
+                    filter_sn = None
                 if (not os.path.isfile(file_fluxes)) or (not os.path.isfile(f_binmap)):
                     log.error("Either table with fluxes (from binned RSS) or binmap do not exist. Exit.")
                     return
-                filter_sn = None
+
             elif config['imaging'].get('use_binned_rss_file'):
                 log.error("'binning' block is not present. Exit.")
                 return
@@ -3621,7 +3636,8 @@ def sn_func(index, signal=None, noise=None):
     return sn
 
 
-def run_contbin(flux, errors, wcs, w_dir, target_sn, mul=1.0, flux_orig=None, errors_orig=None):
+def run_contbin(flux, errors, wcs, w_dir, target_sn, mul=1.0, flux_orig=None, errors_orig=None,
+                scrublarge=0.15, constrainval=2.0, smooth_sn_max=30):
     # Load the data
     if os.path.exists(w_dir):
         keep_dir = True
@@ -3641,9 +3657,10 @@ def run_contbin(flux, errors, wcs, w_dir, target_sn, mul=1.0, flux_orig=None, er
 
     try:
         os.chdir(w_dir)
-        smooth_sn = np.min([int(np.round(target_sn*0.7)), 30])
+        smooth_sn = np.min([int(np.round(target_sn*0.7)), smooth_sn_max])
         os.system(f"contbin input.fits --noisemap=errors.fits --sn={target_sn} "
-              f"--mask=mask.fits --scrublarge=0.15 --smoothsn={smooth_sn} --constrainfill --constrainval=2.0")
+              f"--mask=mask.fits --scrublarge={scrublarge} --smoothsn={smooth_sn} "
+                  f"--constrainfill --constrainval={constrainval}")
     except OSError as e:
         log.error("Error running contbin:", e)
         if not keep_dir:
@@ -3814,12 +3831,15 @@ def bin_rss(config, w_dir=None):
                 noise *= noise_scale
                 noise_eval *= noise_scale
             x, y = np.meshgrid(np.arange(signal.shape[1]), np.arange(signal.shape[0]))
+            add_bins = []
             if reg_mask is not None:
                 with fits.open(f_image) as hdu:
                     wcs = WCS(hdu[0].header)
                     for cur_mask in reg_mask:
                         rec_exclude = cur_mask.to_pixel(wcs).to_mask().to_image(signal.shape) > 0
                         signal[rec_exclude] = np.nan
+                        if cur_mask.meta.get('text') is not None and cur_mask.meta.get('text').lower().startswith('include'):
+                            add_bins.append(rec_exclude)
 
             if eval_line is not None:
                 if eval_sn == 0:
@@ -3868,8 +3888,23 @@ def bin_rss(config, w_dir=None):
                     flux_orig = None
                     noise_orig = None
 
+                if not config['binning'].get('contbin_scrublarge'):
+                    scrublarge = 0.15
+                else:
+                    scrublarge = config['binning'].get('contbin_scrublarge')
+                if not config['binning'].get('contbin_constrainval'):
+                    constrainval = 2.0
+                else:
+                    constrainval = config['binning'].get('contbin_constrainval')
+                if not config['binning'].get('contbin_smooth_sn_max'):
+                    smooth_sn_max = 30
+                else:
+                    smooth_sn_max = config['binning'].get('contbin_smooth_sn_max')
+
                 res = run_contbin(signal_eval, noise_eval, wcs, w_dir=os.path.join(cur_wdir, map_source, 'temp_contbin'),
-                                  target_sn=eval_sn, mul=mul, flux_orig=flux_orig, errors_orig=noise_orig)
+                                  target_sn=eval_sn, mul=mul, flux_orig=flux_orig, errors_orig=noise_orig,
+                                  scrublarge=scrublarge, smooth_sn_max=smooth_sn_max,
+                                  constrainval=constrainval)
                 if res is None:
                     log.error(f"Contbin binning failed for object {cur_obj.get('name')}.")
                     statuses.append(False)
@@ -3880,6 +3915,18 @@ def bin_rss(config, w_dir=None):
                           f"Cannot proceed with binning for object {cur_obj.get('name')}.")
                 statuses.append(False)
                 continue
+
+            if len(add_bins) > 0:
+                log.info(f"Manually add {len(add_bins)} previously masked regions as the bins.")
+                for cur_add in add_bins:
+                    max_bin = np.max(bin_image)+1
+                    bin_image[cur_add & (bin_image == -1)] = max_bin
+                    good_bins = np.append(good_bins, max_bin)
+                    npixels = np.append(npixels, np.sum(cur_add & (bin_image == max_bin)))
+                    sn = np.append(sn, sn_func(np.flatnonzero(cur_add), signal=signal.ravel(), noise=noise.ravel()))
+                    x_bar = np.append(x_bar, np.nansum(signal * x * cur_add) / np.nansum(signal * cur_add))
+                    y_bar = np.append(y_bar, np.nansum(signal * y * cur_add) / np.nansum(signal * cur_add))
+
             log.info(f"Average S/N in the obtained bins: {np.nanmean(sn):.2f} +/- {np.nanstd(sn):.2f}")
             radec_bin = wcs.pixel_to_world(x_bar, y_bar)
 
