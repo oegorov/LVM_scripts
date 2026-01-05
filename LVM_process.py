@@ -3621,6 +3621,70 @@ def sn_func(index, signal=None, noise=None):
     return sn
 
 
+def run_contbin(flux, errors, wcs, w_dir, target_sn, mul=1.0, flux_orig=None, errors_orig=None):
+    # Load the data
+    if os.path.exists(w_dir):
+        keep_dir = True
+    else:
+        keep_dir = False
+        os.makedirs(w_dir)
+    hdul = fits.HDUList([fits.PrimaryHDU(data=flux * mul, header=wcs.to_header())])
+    mask = np.ones_like(flux, dtype=int)
+    mask[~np.isfinite(flux) | (flux <= 0)] = 0
+    hdul.writeto(os.path.join(w_dir,'input.fits'), overwrite=True)
+
+    hdul = fits.HDUList([fits.PrimaryHDU(data=errors * mul, header=wcs.to_header())])
+    mask[~np.isfinite(errors) | (errors<=0)] = 0
+    hdul.writeto(os.path.join(w_dir, 'errors.fits'), overwrite=True)
+    fits.writeto(os.path.join(w_dir,'mask.fits'), mask, header=hdul[0].header, overwrite=True)
+    cdir = os.curdir
+
+    try:
+        os.chdir(w_dir)
+        smooth_sn = np.min([int(np.round(target_sn*0.7)), 30])
+        os.system(f"contbin input.fits --noisemap=errors.fits --sn={target_sn} "
+              f"--mask=mask.fits --scrublarge=0.15 --smoothsn={smooth_sn} --constrainfill --constrainval=2.0")
+    except OSError as e:
+        log.error("Error running contbin:", e)
+        if not keep_dir:
+            os.chdir(cdir)
+            shutil.rmtree(w_dir)
+        return None
+
+    ### Post-process the output bins
+    if (flux_orig is not None) and (errors_orig is not None):
+        # This assume that errors and fluxes were rescaled before binning (e.g. evaluating different line)
+        error_map = errors_orig
+        flux_map = flux_orig
+    else:
+        error_map = errors
+        flux_map = flux
+
+    with fits.open('contbin_binmap.fits') as hdul:
+        labels = hdul[0].data.astype(int)
+        hdul.close()
+        good_bins, bin_indices, npixels = np.unique(labels, return_index=True, return_counts=True)
+        nbins = len(good_bins)
+        sn = np.nansum(flux_map.reshape(-1, 1) * (labels.reshape(-1, 1) == good_bins.reshape(1, -1)), axis=0) / \
+             np.sqrt(np.nansum(error_map.reshape(-1, 1) ** 2 * (labels.reshape(-1, 1) == good_bins.reshape(1, -1)),
+                               axis=0))
+        xx, yy = np.meshgrid(np.arange(labels.shape[1]), np.arange(labels.shape[0]))
+
+        x_bar = np.nansum(flux.reshape(-1, 1) * np.repeat(xx.reshape(-1, 1), nbins, axis=1) *
+                          (labels.reshape(-1, 1) == good_bins.reshape(1, -1)), axis=0) / \
+                np.nansum(flux.reshape(-1, 1) * (labels.reshape(-1, 1) == good_bins.reshape(1, -1)), axis=0)
+        y_bar = np.nansum(flux.reshape(-1, 1) * np.repeat(yy.reshape(-1, 1), nbins, axis=1) *
+                          (labels.reshape(-1, 1) == good_bins.reshape(1, -1)), axis=0) / \
+                np.nansum(flux.reshape(-1, 1) * (labels.reshape(-1, 1) == good_bins.reshape(1, -1)), axis=0)
+
+    if not keep_dir:
+        os.chdir(cdir)
+        # remove temporary dir
+        shutil.rmtree(w_dir)
+
+    return labels, good_bins[1:], x_bar[1:], y_bar[1:], sn[1:], npixels[1:]
+
+
 def bin_rss(config, w_dir=None):
 
     if w_dir is None or not os.path.exists(w_dir):
@@ -3637,6 +3701,9 @@ def bin_rss(config, w_dir=None):
     if not suffix_binmap:
         suffix_binmap = '_binmap.fits'
     bin_line = config['binning'].get('line')
+    bin_mode = config['binning'].get('bin_mode')
+    if not bin_mode:
+        bin_mode = 'vorbin'
     if not bin_line:
         bin_line = 'Ha'
     target_sn = config['binning'].get('target_sn')
@@ -3673,6 +3740,8 @@ def bin_rss(config, w_dir=None):
             f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes_singleRSS.fits")
         else:
             f_tab_summary = os.path.join(cur_wdir, f"{cur_obj.get('name')}_fluxes.fits")
+        if config['imaging'].get('use_dap'):
+            f_tab_summary = f_tab_summary.replace('.fits', '_dap.fits')
         if not os.path.isfile(f_tab_summary):
             f_tab_summary = f_tab_summary.replace(".fits", ".txt")
             if not os.path.isfile(f_tab_summary):
@@ -3681,8 +3750,16 @@ def bin_rss(config, w_dir=None):
                           f"Can't proceed with object {cur_obj.get('name')}.")
                 statuses.append(False)
                 continue
-        log.info(f"Performing voronoi binning for object {cur_obj.get('name')}. "
-                 f"Target SN={target_sn} in {bin_line} line.")
+        eval_line = None
+        if bin_mode == 'contbin':
+            if config['binning'].get('line_for_evaluation') != bin_line:
+                eval_line = config['binning'].get('line_for_evaluation')
+                eval_sn = config['binning'].get('eval_sn')
+                if not eval_sn:
+                    eval_sn = 0 # will be set later
+            else:
+                eval_sn = target_sn
+                eval_line = None
         f_binmap = os.path.join(cur_wdir, map_source,
                                 f"{cur_obj.get('name')}_{pxscale_bin}asec_{bin_line}_sn{target_sn}{suffix_binmap}")
         f_image = os.path.join(cur_wdir, map_source,
@@ -3692,9 +3769,24 @@ def bin_rss(config, w_dir=None):
         if not os.path.isfile(f_image) or not os.path.isfile(f_err):
             log.error(
                 f"Maps of flux and errors in {bin_line} at {pxscale_bin} scale must be created "
-                f"in 'maps' folder for {cur_obj.get('name')} before the binning.")
+                f"in '{map_source}' folder for {cur_obj.get('name')} before the binning.")
             statuses.append(False)
             continue
+        if eval_line is not None:
+            f_eval = os.path.join(cur_wdir, map_source,
+                                  f"{cur_obj.get('name')}_{pxscale_bin}asec_{eval_line}_flux.fits")
+            f_eval_err = os.path.join(cur_wdir, map_source,
+                                  f"{cur_obj.get('name')}_{pxscale_bin}asec_{eval_line}_fluxerr.fits")
+            if not os.path.isfile(f_eval) or not os.path.isfile(f_eval_err):
+                log.error(
+                    f"Maps of flux and errors in {eval_line} at {pxscale_bin} scale must be created "
+                    f"in '{map_source}' folder for {cur_obj.get('name')} before the binning.")
+                statuses.append(False)
+                continue
+
+        log.info(f"Performing binning with {bin_mode} for object {cur_obj.get('name')}. "
+                 f"Target SN={target_sn} in {bin_line} line.")
+
         if config['binning'].get('mask_ds9_suffix'):
             f_ds9_mask = os.path.join(cur_wdir, f"{cur_obj.get('name')}{config['binning'].get('mask_ds9_suffix')}")
         else:
@@ -3709,11 +3801,18 @@ def bin_rss(config, w_dir=None):
         if not config['binning'].get('use_binmap'):
             signal = fits.getdata(f_image)
             noise = fits.getdata(f_err)
+            if eval_line is not None:
+                signal_eval = fits.getdata(f_eval)
+                noise_eval = fits.getdata(f_eval_err)
+            else:
+                signal_eval = np.copy(signal)
+                noise_eval = np.copy(noise)
             if config['binning'].get('rescale_noise'):
                 noise_scale = np.sqrt(np.pi * (fiber_d / 2) ** 2 / float(pxscale_bin)**2)
                 log.info(f"Increasing noise by {np.round(noise_scale,2)} assuming that the average S/N per arcsec "
                          f"in {pxscale_bin}arcsec images are the same as in the individual fibers")
                 noise *= noise_scale
+                noise_eval *= noise_scale
             x, y = np.meshgrid(np.arange(signal.shape[1]), np.arange(signal.shape[0]))
             if reg_mask is not None:
                 with fits.open(f_image) as hdu:
@@ -3722,23 +3821,66 @@ def bin_rss(config, w_dir=None):
                         rec_exclude = cur_mask.to_pixel(wcs).to_mask().to_image(signal.shape) > 0
                         signal[rec_exclude] = np.nan
 
-            rec = (np.isfinite(signal) & (signal != 0) & np.isfinite(noise) & (noise > 0) & (signal/noise >= sn_prefilter)).ravel()
-            log.info(f"Number of pixels with S/N>={sn_prefilter} in {bin_line} line: "
-                     f"{np.sum(rec)} ({np.sum(rec)/signal.size*100:.2f}%). Consider these pixels for binning.")
-            # noise[rec] = abs(np.nanmedian(signal)+np.nanstd(signal))
+            if eval_line is not None:
+                if eval_sn == 0:
+                    rec = (signal > np.nanpercentile(signal, 80)) & (
+                            signal < np.nanpercentile(signal, 99.9999))
+                    average_rat = np.round(np.nanmedian(signal_eval[rec] / signal[rec]))
+                    eval_sn = target_sn * average_rat
+                    log.info(f"Evaluate image in {eval_line} assuming average flux ratio = {round(average_rat, 2)} "
+                             f"(new target S/N = {round(eval_sn, 1)}).")
+                else:
+                    log.info(f"Evaluate image in {eval_line} with the new target S/N = {round(eval_sn, 1)}).")
 
-            binnum, _, _, x_bar, y_bar, sn, npixels, _ = voronoi_2d_binning(x.ravel()[rec], y.ravel()[rec],
-                                                                                        signal.ravel()[rec], noise.ravel()[rec],
-                                                                                        target_sn, plot=0, quiet=1,
-                                                                            pixelsize=1, sn_func=sn_func, cvt=False, wvt=True)
-            bin_image = np.zeros_like(signal, dtype=int) - 1
-            bin_image.ravel()[rec] = binnum
-            # bin_image = binnum.reshape(signal.shape)
+            rec = (np.isfinite(signal_eval) & (signal_eval != 0) & np.isfinite(noise_eval) & (noise_eval > 0) &
+                   (signal_eval/noise_eval >= sn_prefilter)).ravel()
+            if eval_line is not None:
+                cur_eval_line = eval_line
+            else:
+                cur_eval_line = bin_line
+            log.info(f"Number of pixels with S/N>={sn_prefilter} in {cur_eval_line} line: "
+                     f"{np.sum(rec)} ({np.sum(rec)/signal_eval.size*100:.2f}%). Consider these pixels for binning.")
 
-            good_bins = np.unique(binnum)
-            npixels = npixels[good_bins]
-            sn = sn[good_bins]
             wcs = WCS(header)
+            if bin_mode == 'vorbin':
+                binnum, _, _, x_bar, y_bar, sn, npixels, _ = voronoi_2d_binning(x.ravel()[rec], y.ravel()[rec],
+                                                                                            signal_eval.ravel()[rec],
+                                                                                            noise_eval.ravel()[rec],
+                                                                                            eval_sn, plot=0, quiet=1,
+                                                                                pixelsize=1, sn_func=sn_func,
+                                                                                cvt=False, wvt=True)
+                bin_image = np.zeros_like(signal, dtype=int) - 1
+                bin_image.ravel()[rec] = binnum
+
+                good_bins = np.unique(binnum)
+                npixels = npixels[good_bins]
+                sn = sn[good_bins]
+
+            elif bin_mode == 'contbin':
+                if np.log10(np.nanmedian(signal_eval)) < -10:
+                    mul = 1e20 # assuming it is in erg/s/cm2 units
+                else:
+                    mul = 1.0 # assuming it is already in 1e-20 erg/s/cm2 units (DAP results)
+                if eval_line is not None:
+                    flux_orig = signal
+                    noise_orig = noise
+                else:
+                    flux_orig = None
+                    noise_orig = None
+
+                res = run_contbin(signal_eval, noise_eval, wcs, w_dir=os.path.join(cur_wdir, map_source, 'temp_contbin'),
+                                  target_sn=eval_sn, mul=mul, flux_orig=flux_orig, errors_orig=noise_orig)
+                if res is None:
+                    log.error(f"Contbin binning failed for object {cur_obj.get('name')}.")
+                    statuses.append(False)
+                    continue
+                bin_image, good_bins, x_bar, y_bar, sn, npixels = res
+            else:
+                log.error(f"Unknown binning mode '{bin_mode}' is specified. "
+                          f"Cannot proceed with binning for object {cur_obj.get('name')}.")
+                statuses.append(False)
+                continue
+            log.info(f"Average S/N in the obtained bins: {np.nanmean(sn):.2f} +/- {np.nanstd(sn):.2f}")
             radec_bin = wcs.pixel_to_world(x_bar, y_bar)
 
             tab_summary_bins = Table(data=[good_bins, radec_bin.ra.degree, radec_bin.dec.degree, ['science']*len(radec_bin),
@@ -3819,7 +3961,11 @@ def bin_rss(config, w_dir=None):
             if 'sourceid' not in tab.colnames:
                 tab.add_column('None_00000_9999999', name='sourceid')
                 for r in tab:
-                    r['sourceid'] = f"None_00000_{r['fiberid']}"
+                    if 'fiberid' in tab.colnames:
+                        r['sourceid'] = f"None_00000_{r['fiberid']}"
+                    else:
+                        # in case fiberid is missing (DAP results)
+                        r['sourceid'] = f"None_00000_{r['id'].split('.')[1]}"
 
             hdu_single_rss = fits.open(f_rss)
         else:
@@ -3830,9 +3976,9 @@ def bin_rss(config, w_dir=None):
 
             if correct_vel_line is not None:
                 med_vel = np.nanmedian(tab[in_reg][correct_vel_line])
-                params = zip(tab[in_reg]['sourceid'], tab[in_reg]['fluxcorr_b'],
-                             tab[in_reg]['fluxcorr_r'], tab[in_reg]['fluxcorr_z'],
-                             tab[in_reg]['vhel_corr'],
+                params = zip(tab[in_reg]['sourceid'].astype(str), tab[in_reg]['fluxcorr_b'].astype(str),
+                             tab[in_reg]['fluxcorr_r'].astype(str), tab[in_reg]['fluxcorr_z'].astype(str),
+                             tab[in_reg]['vhel_corr'].astype(str),
                              tab[in_reg][correct_vel_line] - med_vel,
                              [cur_obj.get('velocity')] * len(in_reg),
                              [config['imaging'].get('include_sky')] * len(in_reg),
