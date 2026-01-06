@@ -1617,6 +1617,8 @@ def copy_reduced_data(config, output_dir=None, use_symlink=False, sas=False, for
                             continue
                         os.remove(fname)
                 if use_symlink:
+                    if file_id == 0:
+                        print(fname, curdir)
                     os.symlink(sf, fname)
                 else:
                     shutil.copy(sf, curdir)
