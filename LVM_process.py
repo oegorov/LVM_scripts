@@ -4268,7 +4268,7 @@ def extract_spectra_ds9(config, w_dir=None):
                         'Attempting to link the files from SAS.'
                         '!!! Attention !!! If you want to use custom reduced files, '
                         'please copy them to the work directory!')
-            copy_reduced_data(config, output_dir=cur_wdir, use_symlink=True, sas=True)
+            copy_reduced_data(config, output_dir=w_dir, use_symlink=True, sas=True)
         with fits.open(test_rssfile) as hdu:
             nx_spec = hdu['FLUX'].header['NAXIS1']
 
