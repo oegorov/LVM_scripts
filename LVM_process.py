@@ -4321,6 +4321,7 @@ def extract_spectra_ds9(config, w_dir=None):
 
         rss_out = fits.open(f_out)
         gs = GridSpec(nregs_to_show, 1, fig, 0.1, 0.1, 0.99, 0.99, 0.1, 0.15)
+        empty_reg = 0
         for cur_reg_id, cur_reg in enumerate(regions):
             cur_reg_name = regnames[cur_reg_id]
             in_reg = cur_reg.contains(radec, wcs_ref)
@@ -4330,6 +4331,7 @@ def extract_spectra_ds9(config, w_dir=None):
             in_reg = np.flatnonzero(in_reg)
             if len(in_reg) == 0:
                 log.warning(f"No fibers within region {cur_reg_name}")
+                empty_reg+=1
                 continue
 
             if not config['imaging'].get('use_dap'):
@@ -4396,13 +4398,13 @@ def extract_spectra_ds9(config, w_dir=None):
             sky_error = np.sqrt(np.nanmean(res[:, 3, :] ** 2 * fiber_weights[:, None] ** 2, axis=0))/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
             cur_lsf = np.nanmean(res[:, 5, :], axis=0)
 
-            rss_out['FLUX'].data[cur_reg_id, :] = np.float32(flux)
-            rss_out['IVAR'].data[cur_reg_id, :] = np.float32(1/(error**2))
-            rss_out['SKY'].data[cur_reg_id, :] = np.float32(sky)
-            rss_out['SKY_IVAR'].data[cur_reg_id, :] = np.float32(1/(sky_error**2))
-            rss_out['LSF'].data[cur_reg_id, :] = np.float32(cur_lsf)
+            rss_out['FLUX'].data[cur_reg_id-empty_reg, :] = np.float32(flux)
+            rss_out['IVAR'].data[cur_reg_id-empty_reg, :] = np.float32(1/(error**2))
+            rss_out['SKY'].data[cur_reg_id-empty_reg, :] = np.float32(sky)
+            rss_out['SKY_IVAR'].data[cur_reg_id-empty_reg, :] = np.float32(1/(sky_error**2))
+            rss_out['LSF'].data[cur_reg_id-empty_reg, :] = np.float32(cur_lsf)
 
-            tab_slitmap_out.add_row([cur_reg_name, cur_reg_id+1, ras_reg[cur_reg_id], decs_reg[cur_reg_id],
+            tab_slitmap_out.add_row([cur_reg_name, cur_reg_id+1-empty_reg, ras_reg[cur_reg_id], decs_reg[cur_reg_id],
                                  'science', 0, len(in_reg), np.sum(fiber_weights)])
 
             if cur_reg_id < nregs_to_show:
@@ -4413,6 +4415,8 @@ def extract_spectra_ds9(config, w_dir=None):
                 ax.set_ylabel(r"Intensity, erg/s/cm^2/arcsec^2/A")
 
         for kw in ['FLUX', 'IVAR', 'SKY', 'SKY_IVAR', 'LSF', 'MASK', 'WAVE']:
+            if kw != 'WAVE':
+                rss_out[kw].data = rss_out[kw].data[:len(regions)-empty_reg, :]
             rss_out[kw].header['CRVAL1'] = res[0,4,0]
             rss_out[kw].header['CRPIX1'] = 1
             rss_out[kw].header['CDELT1'] = res[0,4,1]-res[0,4,0]
