@@ -1511,12 +1511,21 @@ def fix_astrometry(file, first_exp=None):
         fix_permission(file)
 
 
-def copy_reduced_data(config, output_dir=None):
+def copy_reduced_data(config, output_dir=None, use_symlink=False, sas=False, force_overwrite_symlink=False):
     if output_dir is None:
         output_dir = config.get('default_output_dir')
     if not output_dir:
         log.error("Output directory is not set up. Cannot copy files")
         return False
+
+    if use_symlink:
+        text_mode = 'Linking'
+    else:
+        text_mode = 'Copying'
+    if sas:
+        source_drp_dir = drp_results_dir_sas
+    else:
+        source_drp_dir = drp_results_dir
 
     for cur_obj in config['object']:
         if not cur_obj.get('version'):
@@ -1582,17 +1591,17 @@ def copy_reduced_data(config, output_dir=None):
                             short_tileid = '0000XX'
                         else:
                             short_tileid = tileids[exp_ind][:4] + 'XX'
-                    source_files.append(os.path.join(drp_results_dir, short_tileid, str(tileids[exp_ind]),
+                    source_files.append(os.path.join(source_drp_dir, short_tileid, str(tileids[exp_ind]),
                                                      str(data['mjd']), f'lvmSFrame-{exp:08d}.fits'))
                     first_exps.append(exps[0])
                     if config['reduction'].get('copy_cframes'):
-                        source_files.append(os.path.join(drp_results_dir, short_tileid, str(tileids[exp_ind]),
+                        source_files.append(os.path.join(source_drp_dir, short_tileid, str(tileids[exp_ind]),
                                                          str(data['mjd']), f'lvmCFrame-{exp:08d}.fits'))
                         first_exps.append(exps[0])
             if len(source_files) == 0:
                 log.warning(f"Nothing to copy for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
                 continue
-            log.info(f"Copy {len(source_files)} for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
+            log.info(f"{text_mode} {len(source_files)} for object = {cur_obj['name']}, pointing = {cur_pointing.get('name')}")
             bad_expnums = []
             for file_id, sf in tqdm(enumerate(source_files), total=len(source_files)):
                 if not os.path.isfile(sf):
@@ -1600,8 +1609,17 @@ def copy_reduced_data(config, output_dir=None):
                     continue
                 fname = os.path.join(curdir, os.path.split(sf)[-1])
                 if os.path.exists(fname):
-                    os.remove(fname)
-                shutil.copy(sf, curdir)
+                    if os.path.islink(fname):
+                        os.unlink(fname)
+                    else:
+                        if use_symlink and not force_overwrite_symlink:
+                            log.warning(f"File already exists, won't overwrite it with symlink: {fname}")
+                            continue
+                        os.remove(fname)
+                if use_symlink:
+                    os.symlink(sf, fname)
+                else:
+                    shutil.copy(sf, curdir)
                 # fix_astrometry(fname, first_exp=first_exps[file_id])
             if len(bad_expnums) > 0:
                 log.warning(f"{len(bad_expnums)} files were not copied because they are not found in "
@@ -4242,6 +4260,13 @@ def extract_spectra_ds9(config, w_dir=None):
         test_exp_id = test_pointing.get('data')[0].get('exp')[0]
         test_pointing_name = test_pointing.get('name')
         test_rssfile = os.path.join(cur_wdir, test_pointing_name, f'lvmSFrame-{test_exp_id:0>8}.fits')
+        if not os.path.exists(test_rssfile):
+            log.warning('Cannot find test RSS file to get the spectrum size for the output RSS file. '
+                        'Perhaps, reduced files were not copied to the work directory. '
+                        'Attempting to link the files from SAS.'
+                        '!!! Attention !!! If you want to use custom reduced files, '
+                        'please copy them to the work directory!')
+            copy_reduced_data(config, output_dir=cur_wdir, use_symlink=True, sas=True)
         with fits.open(test_rssfile) as hdu:
             nx_spec = hdu['FLUX'].header['NAXIS1']
 
