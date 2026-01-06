@@ -3657,7 +3657,7 @@ def sn_func(index, signal=None, noise=None):
 
 
 def run_contbin(flux, errors, wcs, w_dir, target_sn, mul=1.0, flux_orig=None, errors_orig=None,
-                scrublarge=0.15, constrainval=2.0, smooth_sn_max=30):
+                scrublarge=0.15, constrainval=2.0, smooth_sn_max=30, always_mask=None):
     # Load the data
     if os.path.exists(w_dir):
         keep_dir = True
@@ -3700,6 +3700,15 @@ def run_contbin(flux, errors, wcs, w_dir, target_sn, mul=1.0, flux_orig=None, er
     with fits.open('contbin_binmap.fits') as hdul:
         labels = hdul[0].data.astype(int)
         hdul.close()
+        if always_mask is not None:
+            labels[always_mask] = -1
+            all_bins = np.unique(labels)
+            all_bins = all_bins[all_bins != -1]
+            # Create mapping: old_label -> new_label
+            mapping = {old: new for new, old in enumerate(all_bins)}
+            # Apply mapping
+            avoid_empty = labels != -1
+            labels[avoid_empty] = np.vectorize(mapping.get)(labels[avoid_empty])
         good_bins, bin_indices, npixels = np.unique(labels, return_index=True, return_counts=True)
         nbins = len(good_bins)
         sn = np.nansum(flux_map.reshape(-1, 1) * (labels.reshape(-1, 1) == good_bins.reshape(1, -1)), axis=0) / \
@@ -3852,12 +3861,14 @@ def bin_rss(config, w_dir=None):
                 noise_eval *= noise_scale
             x, y = np.meshgrid(np.arange(signal.shape[1]), np.arange(signal.shape[0]))
             add_bins = []
+            always_mask = np.zeros_like(signal, dtype=bool)
             if reg_mask is not None:
                 with fits.open(f_image) as hdu:
                     wcs = WCS(hdu[0].header)
                     for cur_mask in reg_mask:
                         rec_exclude = cur_mask.to_pixel(wcs).to_mask().to_image(signal.shape) > 0
                         signal[rec_exclude] = np.nan
+                        always_mask[rec_exclude] = True
                         if cur_mask.meta.get('text') is not None and cur_mask.meta.get('text').lower().startswith('include'):
                             add_bins.append(rec_exclude)
 
@@ -3924,7 +3935,7 @@ def bin_rss(config, w_dir=None):
                 res = run_contbin(signal_eval, noise_eval, wcs, w_dir=os.path.join(cur_wdir, map_source, 'temp_contbin'),
                                   target_sn=eval_sn, mul=mul, flux_orig=flux_orig, errors_orig=noise_orig,
                                   scrublarge=scrublarge, smooth_sn_max=smooth_sn_max,
-                                  constrainval=constrainval)
+                                  constrainval=constrainval, always_mask=always_mask)
                 if res is None:
                     log.error(f"Contbin binning failed for object {cur_obj.get('name')}.")
                     statuses.append(False)
@@ -3944,9 +3955,8 @@ def bin_rss(config, w_dir=None):
                     good_bins = np.append(good_bins, max_bin)
                     npixels = np.append(npixels, np.sum(cur_add & (bin_image == max_bin)))
                     sn = np.append(sn, sn_func(np.flatnonzero(cur_add), signal=signal.ravel(), noise=noise.ravel()))
-                    x_bar = np.append(x_bar, np.nansum(signal * x * cur_add) / np.nansum(signal * cur_add))
-                    y_bar = np.append(y_bar, np.nansum(signal * y * cur_add) / np.nansum(signal * cur_add))
-
+                    x_bar = np.append(x_bar, np.nansum(signal_eval * x * cur_add) / np.nansum(signal_eval * cur_add))
+                    y_bar = np.append(y_bar, np.nansum(signal_eval * y * cur_add) / np.nansum(signal_eval * cur_add))
             log.info(f"Average S/N in the obtained bins: {np.nanmean(sn):.2f} +/- {np.nanstd(sn):.2f}")
             radec_bin = wcs.pixel_to_world(x_bar, y_bar)
 
