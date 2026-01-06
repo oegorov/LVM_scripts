@@ -4361,7 +4361,7 @@ def extract_spectra_ds9(config, w_dir=None):
                 med_vel = np.nanmedian(table_fluxes[in_reg][f'{correct_vel_line}_vel'])
                 params = zip(sourceid, fluxcorr_b,
                              fluxcorr_r, fluxcorr_z,
-                             table_fluxes[in_reg]['vhel_corr'], table_fluxes[in_reg][f'{correct_vel_line}_vel']-med_vel,
+                             table_fluxes[in_reg]['vhel_corr'].astype(str), table_fluxes[in_reg][f'{correct_vel_line}_vel']-med_vel,
                              [cur_obj.get('velocity')] * len(in_reg),
                              [config['imaging'].get('include_sky')] * len(in_reg),
                              [config['imaging'].get('partial_sky')] * len(in_reg),
@@ -4370,7 +4370,7 @@ def extract_spectra_ds9(config, w_dir=None):
             else:
                 params = zip(sourceid, fluxcorr_b,
                              fluxcorr_r, fluxcorr_z,
-                             table_fluxes[in_reg]['vhel_corr'],[0]*len(in_reg), [cur_obj.get('velocity')]*len(in_reg),
+                             table_fluxes[in_reg]['vhel_corr'].astype(str),[0]*len(in_reg), [cur_obj.get('velocity')]*len(in_reg),
                              [config['imaging'].get('include_sky')]*len(in_reg), [config['imaging'].get('partial_sky')]*len(in_reg),
                              [cur_wdir]*len(in_reg))
 
