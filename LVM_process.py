@@ -153,10 +153,10 @@ dap_results_correspondence = {
     'SII4068_mom0': '[SII]_4068.6', 'NeIII3869_mom0': '[NeIII]_3868.75',
     'OII7320_mom0': '[OII]_7318.92', 'OII7330_mom0': '[OII]_7329.66', 'ArIII7136_mom0': '[ArIII]_7135.8',
     'Pa8_mom0': 'HI_9545.97', 'Pa9_mom0': 'HI_9229.02', 'Pa10_mom0': 'HI_9014.91',
-    'ArIII7751_mom0': '[ArIII]_7751.06', 'FeII]9226_mom0': '[FeII]_9226.6',
+    'ArIII7751_mom0': '[ArIII]_7751.06', 'FeII9226_mom0': '[FeII]_9226.6',
     'SIII9069_mom0': '[SIII]_9069.0', 'HeI5876_mom0': 'HeI_5876.0',
     'HeI7065_mom0': 'HeI_7065.19', 'HeI6678_mom0': 'HeI_6678.15',
-    'ClIII5518_mom0': '[ClIII]_5517.71', #'ClIII5538_mom0': '[ClIII]_5537.89',
+    'ClIII5518_mom0': '[ClIII]_5517.71', 'ClIII5538_mom0': '[ClIII]_5537.89',
     'FeIII5270_mom0': '[FeIII]_5270.3', 'FeIII4658_mom0': '[FeIII]_4658.1',
     'ArIV4711_mom0': '[ArIV]_4711.33', 'ArIV4740_mom0': '[ArIV]_4740.2',
     'Hd_mom0': 'Hdelta_4101.77', 'HeI4471_mom0': 'HeI_4471.48',
@@ -1389,7 +1389,7 @@ def reduce_parallel(exp_pairs):
             add_weights = f"--sky-weights {weights[0]} {weights[1]}"
         else:
             add_weights = ""
-        os.system(f"drp run -m {mjd} -e {exp} {add_weights}")# >/dev/null 2>&1")
+        os.system(f"drp run -m {mjd} -e {exp} {add_weights}")# >/dev/null 2>&1") #-2d -1d
         # os.system(f"drp run --no-sci --with-cals -m 60291 -e {exp}")
     except Exception as e:
         log.error(f"Something wrong with data reduction: {e}")
@@ -2394,11 +2394,18 @@ def process_all_rss(config, w_dir=None):
             else:
                 log.info(f"All {len(tab_summary)} fibers are unique")
             tab_summary.remove_columns(['ra_round','dec_round'])
+
+            for kw in ['sourceid', 'fluxcorr_r','fluxcorr_b','fluxcorr_z',
+                       'vhel_corr', 'bgr']:
+                maxlen = max(len(s) for s in tab_summary[kw])
+                # cast column to fixed-width unicode
+                tab_summary[kw] = tab_summary[kw].astype(f'<U{maxlen}')
+
             tab_summary.write(f_tab_summary, overwrite=True, format='fits')
             fix_permission(f_tab_summary)
 
         if f_tab_summary.endswith('.fits') and os.path.isfile(f_tab_summary):
-            table_fluxes = Table.read(f_tab_summary, overwrite=True, format='fits')
+            table_fluxes = Table.read(f_tab_summary, format='fits')
         elif os.path.isfile(f_tab_summary.replace('.fits', '.txt')):
             table_fluxes = Table.read(f_tab_summary.replace('.fits', '.txt'), format='ascii.fixed_width_two_line',
                                       converters={'sourceid': str, 'fluxcorr_b': str, 'fluxcorr_r': str,
@@ -2409,7 +2416,7 @@ def process_all_rss(config, w_dir=None):
             continue
         table_fluxes, cur_status = analyse_spectra(
             table_fluxes=table_fluxes, mean_bounds=mean_bounds_fitline,
-            sysvel=cur_obj.get('velocity'), file_rss=None, config=config,
+            sysvel=cur_obj.get('velocity'), config=config,
             single_rss=False, cur_wdir=cur_wdir
         )
         if cur_status:
@@ -2639,10 +2646,10 @@ def analyse_spectra(table_fluxes=None, mean_bounds=mean_bounds_fitline,
                 cur_ax_id += 1
             fig.savefig(save_plot_test, bbox_inches='tight')
 
-        if not np.all(statuses):
-            status_out = False
-        else:
-            status_out = True
+    if not np.all(statuses):
+        status_out = False
+    else:
+        status_out = True
     return table_fluxes, status_out
 
 
@@ -2968,10 +2975,16 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
                     cur_masks = cur_masks & (table_fluxes[f'{ln}_flux'] / table_fluxes[f'{ln}_fluxerr'] >= filter_sn[cl_id])
             if values is None:
                 if f'{ln}_flux' in table_fluxes.colnames:
-                    values = table_fluxes[f'{ln}_flux'] #/ (np.pi * lvm_fiber_diameter ** 2 / 4)
+                    try:
+                        values = table_fluxes[f'{ln}_flux'].astype(float).filled(np.nan)
+                    except AttributeError:
+                        values = np.array(table_fluxes[f'{ln}_flux'])
                     masks = np.copy(cur_masks)
                     if f'{ln}_fluxerr' in table_fluxes.colnames:
-                        values_errs =table_fluxes[f'{ln}_fluxerr']
+                        try:
+                            values_errs = table_fluxes[f'{ln}_fluxerr'].astype(float).filled(np.nan)
+                        except AttributeError:
+                            values_errs = np.array(table_fluxes[f'{ln}_fluxerr'])
                         masks_errs = np.copy(cur_masks)
                 else:
                     continue
@@ -3874,12 +3887,14 @@ def bin_rss(config, w_dir=None):
 
             if eval_line is not None:
                 if eval_sn == 0:
-                    rec = (signal > np.nanpercentile(signal, 80)) & (
-                            signal < np.nanpercentile(signal, 99.9999))
+                    eval_percentile=config['binning'].get('eval_percentile', (80, 99.9999))
+                    rec = (signal > np.nanpercentile(signal, eval_percentile[0])) & (
+                            signal < np.nanpercentile(signal, eval_percentile[1]))
                     average_rat = np.round(np.nanmedian(signal_eval[rec] / signal[rec]))
-                    eval_sn = target_sn * average_rat
+                    eval_sn = round(target_sn * average_rat, 1)
                     log.info(f"Evaluate image in {eval_line} assuming average flux ratio = {round(average_rat, 2)} "
-                             f"(new target S/N = {round(eval_sn, 1)}).")
+                             f"(corresponding to percentiles {eval_percentile[0]}-{eval_percentile[1]}%). "
+                             f"New target S/N = {round(eval_sn, 1)}.")
                 else:
                     log.info(f"Evaluate image in {eval_line} with the new target S/N = {round(eval_sn, 1)}).")
 
@@ -3964,6 +3979,12 @@ def bin_rss(config, w_dir=None):
                                            [0]*len(radec_bin), npixels, sn], names=['fiberid', 'fib_ra', 'fib_dec', 'targettype',
                                                        'fibstatus', 'npix', 'sn'],
                                      dtype=(int, float, float, str, int, int, float))
+            header['BINSN'] = (target_sn, 'Target S/N per bin')
+            header['BINLINE'] = (bin_line, 'Line used for the binning')
+            header['BINMODE'] = (bin_mode, 'Binning mode used')
+            header['BINEVSN'] = (eval_sn, 'Target S/N per bin for evaluation line')
+            header['BINEVLN'] = (eval_line if eval_line is not None else 'None', 'Line used for the evaluation')
+        # Save the binmap
             hdu_out = fits.HDUList([fits.PrimaryHDU(data=bin_image, header=header), fits.BinTableHDU(tab_summary_bins)])
             hdu_out.writeto(f_binmap, overwrite=True)
             fix_permission(f_binmap)
@@ -4287,7 +4308,7 @@ def extract_spectra_ds9(config, w_dir=None):
         regnames = []
         for r_id, r in enumerate(regions):
             if r.meta.get('text'):
-                cur_reg_name = r.meta['text']
+                cur_reg_name = str(r.meta['text'])
             else:
                 cur_reg_name = f'{r_id+1}'
             regnames.append(cur_reg_name)
