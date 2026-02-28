@@ -254,6 +254,16 @@ def LVM_process(config_filename=None, output_dir=None):
     else:
         log.info("Skip combining spectra from individual exposures")
 
+    # === Step 4.3 - Optional step - analyse individual exposures without merging and create per-exposure maps
+    if config['steps'].get('control_exposures'):
+        cur_wdir = output_dir
+        if cur_wdir is None:
+            cur_wdir = config.get('default_output_dir')
+        status = control_exposures(config, w_dir=cur_wdir)
+        if not status:
+            log.error("Critical errors occurred. Exit.")
+            return
+
     # === Step 5.1 - Create single RSS file
     if config['steps'].get('create_single_rss'):
         cur_wdir = output_dir
@@ -1331,6 +1341,319 @@ def download_from_sas(config):
 
     return True
 
+
+def control_exposures(config, w_dir=None):
+    """
+    Analyse all individual exposures without merging overlapping fibers and
+    create per-exposure maps on a common WCS grid.
+    """
+    if w_dir is None or not os.path.exists(w_dir):
+        log.error(f"Work directory does not exist ({w_dir}). Can't proceed further.")
+        return False
+
+    status_out = True
+
+    for cur_obj in config['object']:
+        if not cur_obj.get('version'):
+            version = ''
+        else:
+            version = cur_obj.get('version')
+        obj_name = cur_obj.get('name')
+        cur_obj_wdir = os.path.join(w_dir, obj_name, version)
+        if not os.path.exists(cur_obj_wdir):
+            log.error(f"Work directory does not exist ({cur_obj_wdir}). Can't proceed with object {obj_name}.")
+            status_out = False
+            continue
+
+        log.info(f"Control-exposure analysis for {obj_name}.")
+
+        # --- 1) Build global RA/Dec list for this object from all exposures
+        all_ras = []
+        all_decs = []
+
+        for cur_pointing in cur_obj['pointing']:
+            p_name = cur_pointing['name']
+            for data in cur_pointing['data']:
+                if isinstance(data['exp'], int):
+                    exps = [data['exp']]
+                else:
+                    exps = data['exp']
+
+                for exp in exps:
+                    cur_fname = os.path.join(cur_obj_wdir, p_name, f'lvmSFrame-{exp:08d}.fits')
+                    if not os.path.exists(cur_fname):
+                        log.warning(f"Can't find {cur_fname}")
+                        tileid = data['tileid'][0] if isinstance(data['tileid'], (list, tuple)) else data['tileid']
+                        if obj_name == 'Orion':
+                            if (int(tileid) < 1027000) & (int(tileid) != 11111):
+                                tileid = str(int(tileid) + 27748)
+
+                        if str(tileid) == '11111':
+                            short_tileid = '0011XX'
+                        elif str(tileid) == '999':
+                            short_tileid = '0000XX'
+                        else:
+                            short_tileid = str(tileid)[:4] + 'XX'
+                        cur_fname_source = os.path.join(drp_results_dir_sas, short_tileid, str(tileid),
+                                                        str(data['mjd']), f'lvmSFrame-{exp:08d}.fits')
+                        if not os.path.exists(cur_fname_source):
+                            log.warning(f"It is also not found in reduced files from SAS")
+                            continue
+                        else:
+                            log.warning(f"Found in files downloaded from SAS. Copying...")
+                            shutil.copy(cur_fname_source, cur_fname)
+
+                    with fits.open(cur_fname) as rss:
+                        cur_table_fibers = Table(rss['SLITMAP'].data)
+                        cur_obstime = Time(rss[0].header['OBSTIME'])
+                        sci = cur_table_fibers['targettype'] == 'science'
+                        if config['imaging'].get('skip_bad_fibers'):
+                            sci = sci & (cur_table_fibers['fibstatus'] == 0)
+                        sci = np.flatnonzero(sci)
+
+                        cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy()
+                        cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
+                        all_ras.extend(cur_table_summary['fib_ra'])
+                        all_decs.extend(cur_table_summary['fib_dec'])
+
+        if len(all_ras) == 0:
+            log.warning(f"No science fibers found for object {obj_name}.")
+            status_out = False
+            continue
+
+        all_ras = np.array(all_ras)
+        all_decs = np.array(all_decs)
+
+        # Compute global grid / WCS that covers all fibers for this object
+        dec_0 = np.min(all_decs) - 37. / 2 / 3600
+        dec_1 = np.max(all_decs) + 37. / 2 / 3600
+        ra_0 = np.max(all_ras) + 37. / 2 / 3600 / np.cos(dec_1 / 180 * np.pi)
+        ra_1 = np.min(all_ras) - 37. / 2 / 3600 / np.cos(dec_0 / 180 * np.pi)
+
+        ra_cen = (ra_0 + ra_1) / 2.
+        dec_cen = (dec_0 + dec_1) / 2.
+
+        pxscale_ctrl = None
+        if 'control_exposures' in config and config['control_exposures'].get('pxscale') is not None:
+            pxscale_ctrl = config['control_exposures'].get('pxscale')
+        else:
+            pxscale_ctrl = config['imaging'].get('pxscale')
+
+        nx = np.ceil((ra_0 - ra_1) *
+                     max([np.cos(dec_0 / 180. * np.pi), np.cos(dec_1 / 180. * np.pi)]) /
+                     pxscale_ctrl * 3600. / 2.).astype(int) * 2 + 1
+        ny = np.ceil((dec_1 - dec_0) / pxscale_ctrl * 3600. / 2.).astype(int) * 2 + 1
+        ra_0 = np.round(ra_cen + (nx - 1) / 2 * pxscale_ctrl / 3600. /
+                        max([np.cos(dec_0 / 180. * np.pi), np.cos(dec_1 / 180. * np.pi)]), 6)
+        dec_0 = np.round(dec_cen - (ny - 1) / 2 * pxscale_ctrl / 3600., 6)
+        ra_cen = np.round(ra_cen, 6)
+        dec_cen = np.round(dec_cen, 6)
+
+        wcs_out = WCS(naxis=2)
+        wcs_out.wcs.crpix = [(nx - 1) / 2 + 1, (ny - 1) / 2 + 1]
+        wcs_out.wcs.cdelt = np.array([-np.round(pxscale_ctrl / 3600., 6),
+                                      np.round(pxscale_ctrl / 3600., 6)])
+        wcs_out.wcs.crval = [ra_cen, dec_cen]
+        wcs_out.wcs.cunit = ['deg', 'deg']
+        wcs_out.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+        shape_out = (ny, nx)
+
+        # lines to use: from control_exposures if present, otherwise from imaging
+        if 'control_exposures' in config and config['control_exposures'].get('lines'):
+            lines = config['control_exposures'].get('lines')
+        else:
+            lines = config['imaging'].get('lines')
+
+        if lines is None:
+            log.warning("No lines are defined for control exposures. Skipping.")
+            status_out = False
+            continue
+
+        # Control parameters for analysis and mapping
+        sigma_ctrl = None
+        if 'control_exposures' in config and config['control_exposures'].get('sigma') is not None:
+            sigma_ctrl = config['control_exposures'].get('sigma')
+        else:
+            sigma_ctrl = config['imaging'].get('sigma')
+
+        r_lim_ctrl = None
+        if 'control_exposures' in config and config['control_exposures'].get('r_lim') is not None:
+            r_lim_ctrl = config['control_exposures'].get('r_lim')
+        else:
+            r_lim_ctrl = config['imaging'].get('r_lim')
+
+        maps_dir = os.path.join(cur_obj_wdir, 'maps_individual')
+
+        # --- 2) Per-exposure analysis and maps
+        old_lines = config['imaging'].get('lines')
+
+        for cur_pointing in cur_obj['pointing']:
+            p_name = cur_pointing['name']
+            for data in cur_pointing['data']:
+                if isinstance(data['exp'], int):
+                    exps = [data['exp']]
+                else:
+                    exps = data['exp']
+
+                # flux corrections (per exposure)
+                if not data.get('flux_correction'):
+                    cur_flux_corr_b = [1.] * len(exps)
+                    cur_flux_corr_r = [1.] * len(exps)
+                    cur_flux_corr_z = [1.] * len(exps)
+                else:
+                    cur_flux_corr_b = data['flux_correction']
+                    cur_flux_corr_r = data['flux_correction']
+                    cur_flux_corr_z = data['flux_correction']
+                if isinstance(cur_flux_corr_r, float) or isinstance(cur_flux_corr_r, int):
+                    cur_flux_corr_b = [cur_flux_corr_b]
+                    cur_flux_corr_r = [cur_flux_corr_r]
+                    cur_flux_corr_z = [cur_flux_corr_z]
+                cur_flux_corr_b = np.array(cur_flux_corr_b)
+                cur_flux_corr_r = np.array(cur_flux_corr_r)
+                cur_flux_corr_z = np.array(cur_flux_corr_z)
+
+                for exp_id, exp in enumerate(exps):
+                    cur_fname = os.path.join(cur_obj_wdir, p_name, f'lvmSFrame-{exp:08d}.fits')
+                    if not os.path.exists(cur_fname):
+                        log.warning(f"Can't find {cur_fname}")
+                        tileid = data['tileid'][exp_id]
+                        if obj_name == 'Orion':
+                            if (int(tileid) < 1027000) & (int(tileid) != 11111):
+                                tileid = str(int(tileid) + 27748)
+
+                        if str(tileid) == '11111':
+                            short_tileid = '0011XX'
+                        elif str(tileid) == '999':
+                            short_tileid = '0000XX'
+                        else:
+                            short_tileid = str(tileid)[:4] + 'XX'
+                        cur_fname_source = os.path.join(drp_results_dir_sas, short_tileid, str(tileid),
+                                                        str(data['mjd']), f'lvmSFrame-{exp:08d}.fits')
+                        if not os.path.exists(cur_fname_source):
+                            log.warning(f"It is also not found in reduced files from SAS")
+                            continue
+                        else:
+                            log.warning(f"Found in files downloaded from SAS. Copying...")
+                            shutil.copy(cur_fname_source, cur_fname)
+
+                    with fits.open(cur_fname) as rss:
+                        cur_table_fibers = Table(rss['SLITMAP'].data)
+                        cur_obstime = Time(rss[0].header['OBSTIME'])
+                        sci = cur_table_fibers['targettype'] == 'science'
+                        if config['imaging'].get('skip_bad_fibers'):
+                            sci = sci & (cur_table_fibers['fibstatus'] == 0)
+                        sci = np.flatnonzero(sci)
+
+                        fc = test_calibrations(rss, exp, check_mode='SCI',
+                                               fallback_mode=config['imaging'].get('fallback_fluxcal'),
+                                               force_fallback=config['imaging'].get('force_calib'))
+
+                        cur_flux_corr_b_exp = cur_flux_corr_b[exp_id] * fc[0]
+                        cur_flux_corr_r_exp = cur_flux_corr_r[exp_id] * fc[1]
+                        cur_flux_corr_z_exp = cur_flux_corr_z[exp_id] * fc[2]
+
+                        residual_background = 0
+                        try:
+                            radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
+                                                     dec=rss[0].header['POSCIDE'],
+                                                     unit=('degree', 'degree'))
+                        except ValueError:
+                            radec_central = SkyCoord(ra=np.nanmedian(cur_table_fibers[sci]['ra']),
+                                                     dec=np.nanmedian(cur_table_fibers[sci]['dec']),
+                                                     unit=('degree', 'degree'))
+
+                    vcorr = np.round(
+                        radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
+                                                                 location=obs_loc).to(u.km / u.s).value,
+                        1)
+
+                    cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy()
+                    cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
+
+                    cur_table_summary.add_columns(
+                        (
+                            Column(
+                                np.array(
+                                    [f'{p_name}_{exp:08d}_{cur_fibid:04d}'
+                                     for cur_fibid in cur_table_fibers[sci]["fiberid"]]
+                                ),
+                                name='sourceid', dtype=object
+                            ),
+                            Column(
+                                np.array([str(cur_flux_corr_b_exp)] * len(sci)),
+                                name='fluxcorr_b', dtype=object
+                            ),
+                            Column(
+                                np.array([str(cur_flux_corr_r_exp)] * len(sci)),
+                                name='fluxcorr_r', dtype=object
+                            ),
+                            Column(
+                                np.array([str(cur_flux_corr_z_exp)] * len(sci)),
+                                name='fluxcorr_z', dtype=object
+                            ),
+                            Column(
+                                np.array([str(vcorr)] * len(sci)),
+                                name='vhel_corr', dtype=object
+                            ),
+                            Column(
+                                np.array([str(residual_background)] * len(sci)),
+                                name='bgr', dtype=object
+                            )
+                        )
+                    )
+
+                    table_fluxes_exp = cur_table_summary
+
+                    # Run simple analysis for the selected lines (reusing analyse_spectra)
+                    config['imaging']['lines'] = lines
+                    table_fluxes_exp, cur_status = analyse_spectra(
+                        table_fluxes=table_fluxes_exp, mean_bounds=mean_bounds_fitline,
+                        sysvel=cur_obj.get('velocity'), config=config,
+                        cur_wdir=cur_obj_wdir
+                    )
+                    config['imaging']['lines'] = old_lines
+
+                    if not cur_status:
+                        log.error(f"Control-exposure analysis failed for object={obj_name}, "
+                                  f"pointing={p_name}, exp={exp}")
+                        status_out = False
+                        continue
+
+                    # Cast string-like columns to fixed-width unicode before writing to FITS
+                    for kw in ['sourceid', 'fluxcorr_b', 'fluxcorr_r', 'fluxcorr_z',
+                               'vhel_corr', 'bgr']:
+                        if kw in table_fluxes_exp.colnames:
+                            maxlen = max(len(str(s)) for s in table_fluxes_exp[kw])
+                            table_fluxes_exp[kw] = table_fluxes_exp[kw].astype(f'<U{maxlen}')
+
+                    # Save per-exposure flux table
+                    f_tab_exp = os.path.join(
+                        cur_obj_wdir,
+                        f"{obj_name}_{p_name}_exp{exp:08d}_fluxes_individual.fits"
+                    )
+                    table_fluxes_exp.write(f_tab_exp, overwrite=True, format='fits')
+                    fix_permission(f_tab_exp)
+
+                    # Create per-exposure maps on the common grid
+                    status_img = create_line_image_from_table(
+                        file_fluxes=f_tab_exp,
+                        lines=lines,
+                        pxscale_out=pxscale_ctrl,
+                        r_lim=r_lim_ctrl,
+                        sigma=sigma_ctrl,
+                        output_dir=maps_dir,
+                        outfile_prefix=f"{obj_name}_{version}_{p_name}_exp{exp:08d}_{pxscale_ctrl}asec",
+                        wcs_out=wcs_out,
+                        shape_out=shape_out
+                    )
+                    if not status_img:
+                        log.error(f"Creating maps for object={obj_name}, pointing={p_name}, exp={exp} failed.")
+                        status_out = False
+
+        # restore imaging lines
+        config['imaging']['lines'] = old_lines
+
+    return status_out
 
 def metadata_parallel(mjd):
     """
@@ -2865,7 +3188,8 @@ def derive_radec_ifu(mjd, expnum, first_exp=None, objname=None, pointing_name=No
 
 def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r_lim=50, sigma=2.,
                                 output_dir=None, do_median_masking=False, filter_sn=None,
-                                outfile_prefix=None, ra_lims=None, dec_lims=None, binmap=None):
+                                outfile_prefix=None, ra_lims=None, dec_lims=None, binmap=None,
+                                wcs_out=None, shape_out=None):
     lvm_fiber_diameter = 35.3
     if not os.path.isfile(file_fluxes):
         log.error(f"File {file_fluxes} not found")
@@ -2895,7 +3219,7 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
         shape_out = binmap.shape
         wcs_out = WCS(binmap_head)
         grid_scl = wcs_out.proj_plane_pixel_scales()[0].value * 3600.
-    else:
+    elif (wcs_out is None) or (shape_out is None):
         ras = table_fluxes['fib_ra']
         decs = table_fluxes['fib_dec']
 
@@ -2943,10 +3267,12 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
 
         shape_out = (ny, nx)
         grid_scl = wcs_out.proj_plane_pixel_scales()[0].value * 3600.
-
         log.info(f"Grid scale: {np.round(grid_scl,1)}, output shape: {nx}x{ny}, "
                  f"RA range: {np.round(ra_1,4)} - {np.round(ra_0,4)}, "
                  f"DEC range: {np.round(dec_0,4)} - {np.round(dec_1,4)} ")
+    else:
+        ras = table_fluxes['fib_ra']
+        decs = table_fluxes['fib_dec']
 
 
     # img_arr = np.zeros((ny, nx), dtype=float)
