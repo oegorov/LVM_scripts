@@ -9,6 +9,7 @@ except ModuleNotFoundError:
 import os
 import logging
 import glob
+import re
 
 import numpy as np
 np.seterr(divide='ignore', invalid='ignore')
@@ -156,7 +157,7 @@ dap_results_correspondence = {
     'ArIII7751_mom0': '[ArIII]_7751.06', 'FeII9226_mom0': '[FeII]_9226.6',
     'SIII9069_mom0': '[SIII]_9069.0', 'HeI5876_mom0': 'HeI_5876.0',
     'HeI7065_mom0': 'HeI_7065.19', 'HeI6678_mom0': 'HeI_6678.15',
-    'ClIII5518_mom0': '[ClIII]_5517.71', 'ClIII5538_mom0': '[ClIII]_5537.89',
+    # 'ClIII5518_mom0': '[ClIII]_5517.71', 'ClIII5538_mom0': '[ClIII]_5537.89',
     'FeIII5270_mom0': '[FeIII]_5270.3', 'FeIII4658_mom0': '[FeIII]_4658.1',
     'ArIV4711_mom0': '[ArIV]_4711.33', 'ArIV4740_mom0': '[ArIV]_4740.2',
     'Hd_mom0': 'Hdelta_4101.77', 'HeI4471_mom0': 'HeI_4471.48',
@@ -1326,8 +1327,8 @@ def download_from_sas(config):
                             os.remove(fname)
                         elif os.path.islink(fname):
                             os.unlink(fname)
-                        # os.symlink(sf, fname)
-                        shutil.copy(sf, curdir)
+                        os.symlink(sf, fname)
+                        # shutil.copy(sf, curdir)
                         if (server_group_id is not None) and (os.stat(fname).st_gid != server_group_id):
                             uid = os.stat(fname).st_uid
                             try:
@@ -1487,173 +1488,500 @@ def control_exposures(config, w_dir=None):
         # --- 2) Per-exposure analysis and maps
         old_lines = config['imaging'].get('lines')
 
-        for cur_pointing in cur_obj['pointing']:
-            p_name = cur_pointing['name']
-            for data in cur_pointing['data']:
-                if isinstance(data['exp'], int):
-                    exps = [data['exp']]
-                else:
-                    exps = data['exp']
-
-                # flux corrections (per exposure)
-                if not data.get('flux_correction'):
-                    cur_flux_corr_b = [1.] * len(exps)
-                    cur_flux_corr_r = [1.] * len(exps)
-                    cur_flux_corr_z = [1.] * len(exps)
-                else:
-                    cur_flux_corr_b = data['flux_correction']
-                    cur_flux_corr_r = data['flux_correction']
-                    cur_flux_corr_z = data['flux_correction']
-                if isinstance(cur_flux_corr_r, float) or isinstance(cur_flux_corr_r, int):
-                    cur_flux_corr_b = [cur_flux_corr_b]
-                    cur_flux_corr_r = [cur_flux_corr_r]
-                    cur_flux_corr_z = [cur_flux_corr_z]
-                cur_flux_corr_b = np.array(cur_flux_corr_b)
-                cur_flux_corr_r = np.array(cur_flux_corr_r)
-                cur_flux_corr_z = np.array(cur_flux_corr_z)
-
-                for exp_id, exp in enumerate(exps):
-                    cur_fname = os.path.join(cur_obj_wdir, p_name, f'lvmSFrame-{exp:08d}.fits')
-                    if not os.path.exists(cur_fname):
-                        log.warning(f"Can't find {cur_fname}")
-                        tileid = data['tileid'][exp_id]
-                        if obj_name == 'Orion':
-                            if (int(tileid) < 1027000) & (int(tileid) != 11111):
-                                tileid = str(int(tileid) + 27748)
-
-                        if str(tileid) == '11111':
-                            short_tileid = '0011XX'
-                        elif str(tileid) == '999':
-                            short_tileid = '0000XX'
-                        else:
-                            short_tileid = str(tileid)[:4] + 'XX'
-                        cur_fname_source = os.path.join(drp_results_dir_sas, short_tileid, str(tileid),
-                                                        str(data['mjd']), f'lvmSFrame-{exp:08d}.fits')
-                        if not os.path.exists(cur_fname_source):
-                            log.warning(f"It is also not found in reduced files from SAS")
-                            continue
-                        else:
-                            log.warning(f"Found in files downloaded from SAS. Copying...")
-                            shutil.copy(cur_fname_source, cur_fname)
-
-                    with fits.open(cur_fname) as rss:
-                        cur_table_fibers = Table(rss['SLITMAP'].data)
-                        cur_obstime = Time(rss[0].header['OBSTIME'])
-                        sci = cur_table_fibers['targettype'] == 'science'
-                        if config['imaging'].get('skip_bad_fibers'):
-                            sci = sci & (cur_table_fibers['fibstatus'] == 0)
-                        sci = np.flatnonzero(sci)
-
-                        fc = test_calibrations(rss, exp, check_mode='SCI',
-                                               fallback_mode=config['imaging'].get('fallback_fluxcal'),
-                                               force_fallback=config['imaging'].get('force_calib'))
-
-                        cur_flux_corr_b_exp = cur_flux_corr_b[exp_id] * fc[0]
-                        cur_flux_corr_r_exp = cur_flux_corr_r[exp_id] * fc[1]
-                        cur_flux_corr_z_exp = cur_flux_corr_z[exp_id] * fc[2]
-
-                        residual_background = 0
-                        try:
-                            radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
-                                                     dec=rss[0].header['POSCIDE'],
-                                                     unit=('degree', 'degree'))
-                        except ValueError:
-                            radec_central = SkyCoord(ra=np.nanmedian(cur_table_fibers[sci]['ra']),
-                                                     dec=np.nanmedian(cur_table_fibers[sci]['dec']),
-                                                     unit=('degree', 'degree'))
-
-                    vcorr = np.round(
-                        radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
-                                                                 location=obs_loc).to(u.km / u.s).value,
-                        1)
-
-                    cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy()
-                    cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
-
-                    cur_table_summary.add_columns(
-                        (
-                            Column(
-                                np.array(
-                                    [f'{p_name}_{exp:08d}_{cur_fibid:04d}'
-                                     for cur_fibid in cur_table_fibers[sci]["fiberid"]]
-                                ),
-                                name='sourceid', dtype=object
-                            ),
-                            Column(
-                                np.array([str(cur_flux_corr_b_exp)] * len(sci)),
-                                name='fluxcorr_b', dtype=object
-                            ),
-                            Column(
-                                np.array([str(cur_flux_corr_r_exp)] * len(sci)),
-                                name='fluxcorr_r', dtype=object
-                            ),
-                            Column(
-                                np.array([str(cur_flux_corr_z_exp)] * len(sci)),
-                                name='fluxcorr_z', dtype=object
-                            ),
-                            Column(
-                                np.array([str(vcorr)] * len(sci)),
-                                name='vhel_corr', dtype=object
-                            ),
-                            Column(
-                                np.array([str(residual_background)] * len(sci)),
-                                name='bgr', dtype=object
-                            )
-                        )
-                    )
-
-                    table_fluxes_exp = cur_table_summary
-
-                    # Run simple analysis for the selected lines (reusing analyse_spectra)
-                    config['imaging']['lines'] = lines
-                    table_fluxes_exp, cur_status = analyse_spectra(
-                        table_fluxes=table_fluxes_exp, mean_bounds=mean_bounds_fitline,
-                        sysvel=cur_obj.get('velocity'), config=config,
-                        cur_wdir=cur_obj_wdir
-                    )
-                    config['imaging']['lines'] = old_lines
-
-                    if not cur_status:
-                        log.error(f"Control-exposure analysis failed for object={obj_name}, "
-                                  f"pointing={p_name}, exp={exp}")
-                        status_out = False
-                        continue
-
-                    # Cast string-like columns to fixed-width unicode before writing to FITS
-                    for kw in ['sourceid', 'fluxcorr_b', 'fluxcorr_r', 'fluxcorr_z',
-                               'vhel_corr', 'bgr']:
-                        if kw in table_fluxes_exp.colnames:
-                            maxlen = max(len(str(s)) for s in table_fluxes_exp[kw])
-                            table_fluxes_exp[kw] = table_fluxes_exp[kw].astype(f'<U{maxlen}')
-
-                    # Save per-exposure flux table
-                    f_tab_exp = os.path.join(
-                        cur_obj_wdir,
-                        f"{obj_name}_{p_name}_exp{exp:08d}_fluxes_individual.fits"
-                    )
-                    table_fluxes_exp.write(f_tab_exp, overwrite=True, format='fits')
-                    fix_permission(f_tab_exp)
-
-                    # Create per-exposure maps on the common grid
-                    status_img = create_line_image_from_table(
-                        file_fluxes=f_tab_exp,
-                        lines=lines,
-                        pxscale_out=pxscale_ctrl,
-                        r_lim=r_lim_ctrl,
-                        sigma=sigma_ctrl,
-                        output_dir=maps_dir,
-                        outfile_prefix=f"{obj_name}_{version}_{p_name}_exp{exp:08d}_{pxscale_ctrl}asec",
-                        wcs_out=wcs_out,
-                        shape_out=shape_out
-                    )
-                    if not status_img:
-                        log.error(f"Creating maps for object={obj_name}, pointing={p_name}, exp={exp} failed.")
-                        status_out = False
+        # for cur_pointing in cur_obj['pointing']:
+        #     p_name = cur_pointing['name']
+        #     for data in cur_pointing['data']:
+        #         if isinstance(data['exp'], int):
+        #             exps = [data['exp']]
+        #         else:
+        #             exps = data['exp']
+        #
+        #         # flux corrections (per exposure)
+        #         if not data.get('flux_correction'):
+        #             cur_flux_corr_b = [1.] * len(exps)
+        #             cur_flux_corr_r = [1.] * len(exps)
+        #             cur_flux_corr_z = [1.] * len(exps)
+        #         else:
+        #             cur_flux_corr_b = data['flux_correction']
+        #             cur_flux_corr_r = data['flux_correction']
+        #             cur_flux_corr_z = data['flux_correction']
+        #         if isinstance(cur_flux_corr_r, float) or isinstance(cur_flux_corr_r, int):
+        #             cur_flux_corr_b = [cur_flux_corr_b]
+        #             cur_flux_corr_r = [cur_flux_corr_r]
+        #             cur_flux_corr_z = [cur_flux_corr_z]
+        #         cur_flux_corr_b = np.array(cur_flux_corr_b)
+        #         cur_flux_corr_r = np.array(cur_flux_corr_r)
+        #         cur_flux_corr_z = np.array(cur_flux_corr_z)
+        #
+        #         for exp_id, exp in enumerate(exps):
+        #             cur_fname = os.path.join(cur_obj_wdir, p_name, f'lvmSFrame-{exp:08d}.fits')
+        #             if not os.path.exists(cur_fname):
+        #                 log.warning(f"Can't find {cur_fname}")
+        #                 tileid = data['tileid'][exp_id]
+        #                 if obj_name == 'Orion':
+        #                     if (int(tileid) < 1027000) & (int(tileid) != 11111):
+        #                         tileid = str(int(tileid) + 27748)
+        #
+        #                 if str(tileid) == '11111':
+        #                     short_tileid = '0011XX'
+        #                 elif str(tileid) == '999':
+        #                     short_tileid = '0000XX'
+        #                 else:
+        #                     short_tileid = str(tileid)[:4] + 'XX'
+        #                 cur_fname_source = os.path.join(drp_results_dir_sas, short_tileid, str(tileid),
+        #                                                 str(data['mjd']), f'lvmSFrame-{exp:08d}.fits')
+        #                 if not os.path.exists(cur_fname_source):
+        #                     log.warning(f"It is also not found in reduced files from SAS")
+        #                     continue
+        #                 else:
+        #                     log.warning(f"Found in files downloaded from SAS. Copying...")
+        #                     shutil.copy(cur_fname_source, cur_fname)
+        #
+        #             with fits.open(cur_fname) as rss:
+        #                 cur_table_fibers = Table(rss['SLITMAP'].data)
+        #                 cur_obstime = Time(rss[0].header['OBSTIME'])
+        #                 sci = cur_table_fibers['targettype'] == 'science'
+        #                 if config['imaging'].get('skip_bad_fibers'):
+        #                     sci = sci & (cur_table_fibers['fibstatus'] == 0)
+        #                 sci = np.flatnonzero(sci)
+        #
+        #                 fc = test_calibrations(rss, exp, check_mode='SCI',
+        #                                        fallback_mode=config['imaging'].get('fallback_fluxcal'),
+        #                                        force_fallback=config['imaging'].get('force_calib'))
+        #
+        #                 cur_flux_corr_b_exp = cur_flux_corr_b[exp_id] * fc[0]
+        #                 cur_flux_corr_r_exp = cur_flux_corr_r[exp_id] * fc[1]
+        #                 cur_flux_corr_z_exp = cur_flux_corr_z[exp_id] * fc[2]
+        #
+        #                 residual_background = 0
+        #                 try:
+        #                     radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
+        #                                              dec=rss[0].header['POSCIDE'],
+        #                                              unit=('degree', 'degree'))
+        #                 except ValueError:
+        #                     radec_central = SkyCoord(ra=np.nanmedian(cur_table_fibers[sci]['ra']),
+        #                                              dec=np.nanmedian(cur_table_fibers[sci]['dec']),
+        #                                              unit=('degree', 'degree'))
+        #
+        #             vcorr = np.round(
+        #                 radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
+        #                                                          location=obs_loc).to(u.km / u.s).value,
+        #                 1)
+        #
+        #             cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy()
+        #             cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
+        #
+        #             cur_table_summary.add_columns(
+        #                 (
+        #                     Column(
+        #                         np.array(
+        #                             [f'{p_name}_{exp:08d}_{cur_fibid:04d}'
+        #                              for cur_fibid in cur_table_fibers[sci]["fiberid"]]
+        #                         ),
+        #                         name='sourceid', dtype=object
+        #                     ),
+        #                     Column(
+        #                         np.array([str(cur_flux_corr_b_exp)] * len(sci)),
+        #                         name='fluxcorr_b', dtype=object
+        #                     ),
+        #                     Column(
+        #                         np.array([str(cur_flux_corr_r_exp)] * len(sci)),
+        #                         name='fluxcorr_r', dtype=object
+        #                     ),
+        #                     Column(
+        #                         np.array([str(cur_flux_corr_z_exp)] * len(sci)),
+        #                         name='fluxcorr_z', dtype=object
+        #                     ),
+        #                     Column(
+        #                         np.array([str(vcorr)] * len(sci)),
+        #                         name='vhel_corr', dtype=object
+        #                     ),
+        #                     Column(
+        #                         np.array([str(residual_background)] * len(sci)),
+        #                         name='bgr', dtype=object
+        #                     )
+        #                 )
+        #             )
+        #
+        #             table_fluxes_exp = cur_table_summary
+        #
+        #             # Run simple analysis for the selected lines (reusing analyse_spectra)
+        #             config['imaging']['lines'] = lines
+        #             table_fluxes_exp, cur_status = analyse_spectra(
+        #                 table_fluxes=table_fluxes_exp, mean_bounds=mean_bounds_fitline,
+        #                 sysvel=cur_obj.get('velocity'), config=config,
+        #                 cur_wdir=cur_obj_wdir
+        #             )
+        #             config['imaging']['lines'] = old_lines
+        #
+        #             if not cur_status:
+        #                 log.error(f"Control-exposure analysis failed for object={obj_name}, "
+        #                           f"pointing={p_name}, exp={exp}")
+        #                 status_out = False
+        #                 continue
+        #
+        #             # Cast string-like columns to fixed-width unicode before writing to FITS
+        #             for kw in ['sourceid', 'fluxcorr_b', 'fluxcorr_r', 'fluxcorr_z',
+        #                        'vhel_corr', 'bgr']:
+        #                 if kw in table_fluxes_exp.colnames:
+        #                     maxlen = max(len(str(s)) for s in table_fluxes_exp[kw])
+        #                     table_fluxes_exp[kw] = table_fluxes_exp[kw].astype(f'<U{maxlen}')
+        #
+        #             # Save per-exposure flux table
+        #             f_tab_exp = os.path.join(
+        #                 cur_obj_wdir,
+        #                 f"{obj_name}_{p_name}_exp{exp:08d}_fluxes_individual.fits"
+        #             )
+        #             table_fluxes_exp.write(f_tab_exp, overwrite=True, format='fits')
+        #             fix_permission(f_tab_exp)
+        #
+        #             # Create per-exposure maps on the common grid
+        #             status_img = create_line_image_from_table(
+        #                 file_fluxes=f_tab_exp,
+        #                 lines=lines,
+        #                 pxscale_out=pxscale_ctrl,
+        #                 r_lim=r_lim_ctrl,
+        #                 sigma=sigma_ctrl,
+        #                 output_dir=maps_dir,
+        #                 outfile_prefix=f"{obj_name}_{version}_{p_name}_exp{exp:08d}_{pxscale_ctrl}asec",
+        #                 wcs_out=wcs_out,
+        #                 shape_out=shape_out
+        #             )
+        #             if not status_img:
+        #                 log.error(f"Creating maps for object={obj_name}, pointing={p_name}, exp={exp} failed.")
+        #                 status_out = False
 
         # restore imaging lines
         config['imaging']['lines'] = old_lines
 
+        # Diagnostic: compare per-exposure maps to median and flag systematics
+        control_exposures_diagnostic(
+            maps_dir=maps_dir,
+            lines=lines,
+            obj_name=obj_name,
+            pxscale_ctrl=pxscale_ctrl,
+            config=config
+        )
+
     return status_out
+
+
+def control_exposures_diagnostic(maps_dir, lines, obj_name, pxscale_ctrl, config):
+    """
+    Compare per-exposure flux maps to the pixel-wise median for each line,
+    using only pixels with S/N > sn_min. Quantify deviation primarily via the
+    average ratio (flux / median) and its scatter in the S/N-selected region.
+    Flag systematics; save one combined diagnostic PDF
+    and per-line summary tables.
+    """
+    if not os.path.isdir(maps_dir):
+        log.warning(f"Control-exposure diagnostic: maps directory not found ({maps_dir}). Skip.")
+        return
+
+    # Thresholds (can be overridden in [control_exposures])
+    ratio_deviation_threshold = 0.10   # flag if |mean_ratio - 1| > this
+    min_overlap_pixels = 10
+    sn_min = 5.0
+    median_flux_floor = 1e-30
+    rat_max = 10
+
+    ce = config.get('control_exposures') or {}
+    if ce.get('ratio_deviation_threshold') is not None:
+        ratio_deviation_threshold = float(ce['ratio_deviation_threshold'])
+    if ce.get('min_overlap_pixels') is not None:
+        min_overlap_pixels = int(ce['min_overlap_pixels'])
+    if ce.get('sn_min') is not None:
+        sn_min = float(ce['sn_min'])
+
+    # Collect line names to process
+    line_names_to_process = []
+    for cur_line in lines:
+        if isinstance(cur_line, str):
+            line_names_to_process.append(cur_line)
+        else:
+            lns = cur_line.get('line')
+            if lns is None:
+                continue
+            if isinstance(lns, str):
+                line_names_to_process.append(lns)
+            else:
+                for ln in lns:
+                    line_names_to_process.append(ln)
+    line_names_to_process = list(dict.fromkeys(line_names_to_process))
+
+    def parse_prefix(path, line_name):
+        basename = os.path.basename(path)
+        suffix = f'_{line_name}_flux.fits'
+        if not basename.endswith(suffix):
+            return None, None
+        prefix = basename[:-len(suffix)]
+        parts = prefix.split('_')
+        exp_num = None
+        pointing = None
+        for i, p in enumerate(parts):
+            if p.startswith('exp') and len(p) == 11 and p[3:].isdigit():
+                exp_num = int(p[3:])
+                if i >= 1:
+                    pointing = parts[i - 1]
+                break
+        return pointing, exp_num
+
+    # --- Process each line: load flux (+ fluxerr), median, overlap, S/N>2, stats
+    per_line = {}
+    all_exposure_keys = []  # (pointing, exp) union, sorted
+
+    for line_name in line_names_to_process:
+        pattern = os.path.join(maps_dir, f'*_{line_name}_flux.fits')
+        files = sorted(glob.glob(pattern))
+        if len(files) < 2:
+            log.debug(f"Control-exposure diagnostic: {line_name}: fewer than 2 maps, skip.")
+            continue
+
+        log.info(f"Control-exposure diagnostic: comparing {len(files)} maps for line {line_name}.")
+
+        stack_list = []
+        stack_err_list = []
+        meta_list = []
+        header_ref = None
+        shape_ref = None
+
+        for f in files:
+            pointing, exp_num = parse_prefix(f, line_name)
+            if exp_num is None:
+                continue
+            with fits.open(f) as hdul:
+                data = np.asarray(hdul[0].data, dtype=float)
+                if header_ref is None:
+                    header_ref = hdul[0].header.copy()
+                    shape_ref = data.shape
+                if data.shape != shape_ref:
+                    continue
+                stack_list.append(data)
+                meta_list.append((pointing or '?', exp_num, f))
+                # Load fluxerr if present
+                f_err = f.replace('_flux.fits', '_fluxerr.fits')
+                if os.path.isfile(f_err):
+                    with fits.open(f_err) as hdu_err:
+                        err_data = np.asarray(hdu_err[0].data, dtype=float)
+                        # rescaling errors by pixel scale ratio because I know it is different for different pixscale
+                        err_data = err_data * np.sqrt(np.pi * (fiber_d / 2) ** 2 / (pxscale_ctrl ** 2))
+                        if err_data.shape == shape_ref:
+                            stack_err_list.append(err_data)
+                        else:
+                            stack_err_list.append(np.full(shape_ref, np.nan))
+                else:
+                    stack_err_list.append(np.full(shape_ref, np.nan))
+
+        if len(stack_list) < 2:
+            continue
+        stack = np.array(stack_list)
+        stack_err = np.array(stack_err_list)
+
+        with np.errstate(invalid='ignore'):
+            median_map = np.nanmedian(np.where(np.isfinite(stack) & (stack != 0), stack, np.nan), axis=0)
+        median_map = np.where(np.isfinite(median_map) & (median_map != 0), median_map, np.nan)
+        median_safe = np.where(abs(median_map) > median_flux_floor, median_map, np.nan)
+
+        valid = np.isfinite(stack) & (stack > 0)
+        n_valid_per_pixel = np.sum(valid, axis=0)
+        overlap_mask = n_valid_per_pixel >= 2
+
+        results = []
+        ratio_maps = []
+        for i in range(len(meta_list)):
+            pointing, exp_num, _ = meta_list[i]
+            flux_i = stack[i]
+            err_i = stack_err[i]
+            with np.errstate(invalid='ignore', divide='ignore'):
+                ratio_i = np.where(
+                    overlap_mask & np.isfinite(median_safe) & np.isfinite(flux_i) & (flux_i > 0) &
+                    ((flux_i / err_i) >= sn_min),
+                    flux_i / median_safe,
+                    np.nan
+                )
+            ratio_maps.append(ratio_i)
+            # S/N mask for this exposure (flux/err > sn_min, finite err > a0); if no err map, use overlap only
+            has_err = np.isfinite(err_i).any() and np.nanmin(err_i[err_i > 0]) > 0
+            if has_err:
+                sn_mask = np.isfinite(flux_i) & np.isfinite(err_i) & (err_i > 0) & ((flux_i / err_i) >= sn_min)
+            else:
+                sn_mask = np.isfinite(flux_i) & (flux_i > 0)
+            # final mask for statistics and ratio maps: overlap + finite ratio + S/N cut
+            use_mask = overlap_mask & np.isfinite(ratio_i) & (ratio_i > 0) & (ratio_i < rat_max) & sn_mask
+            n_overlap = np.sum(use_mask)
+            if n_overlap < min_overlap_pixels:
+                mean_ratio = np.nan
+                std_ratio = np.nan
+                flagged = True
+            else:
+                vals = ratio_i[use_mask]
+                mean_ratio = np.nanmedian(vals)
+                std_ratio = np.nanstd(vals)
+                flagged = (np.abs(mean_ratio - 1.0) > ratio_deviation_threshold)
+            results.append({
+                'pointing': pointing,
+                'exp': exp_num,
+                'n_overlap': n_overlap,
+                'mean_ratio': mean_ratio,
+                'std_ratio': std_ratio,
+                'flagged': flagged,
+            })
+            key = (pointing or '?', exp_num)
+            if key not in all_exposure_keys:
+                all_exposure_keys.append(key)
+        all_exposure_keys.sort(key=lambda x: (x[0], x[1]))
+
+        per_line[line_name] = {
+            'median_map': median_map,
+            'overlap_mask': overlap_mask,
+            'stack': stack,
+            'ratio_maps': ratio_maps,
+            'results': results,
+            'meta_list': meta_list,
+            'header_ref': header_ref,
+            'line_name': line_name,
+        }
+        # Colormap limits from median in overlap
+        if np.any(overlap_mask):
+            per_line[line_name]['vmin'] = np.nanpercentile(median_map[overlap_mask], 1)
+            per_line[line_name]['vmax'] = np.nanpercentile(median_map[overlap_mask], 99)
+        else:
+            per_line[line_name]['vmin'] = 0
+            per_line[line_name]['vmax'] = 1
+
+        # Per-line summary table (store main metrics only)
+        summary_path = os.path.join(maps_dir, f'control_diagnostic_{line_name}_summary.fits')
+        try:
+            tab = Table(rows=[(r['pointing'], r['exp'], r['n_overlap'], r['mean_ratio'], r['std_ratio'],
+                              int(r['flagged'])) for r in results],
+                       names=('pointing', 'exp', 'n_overlap', 'mean_ratio', 'std_ratio', 'flagged'))
+            tab.write(summary_path, overwrite=True, format='fits')
+            fix_permission(summary_path)
+        except Exception as e:
+            log.warning(f"Could not write summary table {summary_path}: {e}")
+
+        n_flagged = sum(1 for r in results if r['flagged'])
+        if n_flagged > 0:
+            log.info(f"Control-exposure diagnostic {line_name}: {n_flagged} exposure(s) flagged.")
+
+    if not per_line:
+        return
+
+    # --- Single PDF: all lines per page
+    pdf_path = os.path.join(maps_dir, 'control_diagnostic_all_lines.pdf')
+    line_order = [ln for ln in line_names_to_process if ln in per_line]
+    n_lines = len(line_order)
+    if n_lines == 0:
+        return
+    ncols = min(3, n_lines)
+    nrows = (n_lines + ncols - 1) // ncols
+
+    try:
+        with PdfPages(pdf_path) as pdf:
+            # Page 1: median maps for all lines
+            fig = plt.figure(figsize=(4 * ncols, 4 * nrows))
+            for idx, line_name in enumerate(line_order):
+                pl = per_line[line_name]
+                ax = fig.add_subplot(nrows, ncols, idx + 1, projection=WCS(pl['header_ref']))
+                ax.imshow(pl['median_map'], origin='lower', cmap='viridis',
+                          vmin=pl['vmin'], vmax=pl['vmax'])
+                ax.contour(pl['overlap_mask'].astype(float), levels=[0.5], colors='red', linewidths=0.5)
+                ax.set_title(f'{line_name}\nmedian flux')
+            for j in range(n_lines, nrows * ncols):
+                ax = fig.add_subplot(nrows, ncols, j + 1)
+                ax.set_visible(False)
+            plt.suptitle(f'{obj_name}: median flux (red = overlap)', y=1.02)
+            plt.tight_layout()
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+
+            # One page per exposure: row 0 = flux maps (all lines), row 1 = ratio maps (all lines)
+            for (pointing, exp_num) in all_exposure_keys:
+                fig = plt.figure(figsize=(4 * n_lines, 8))
+                for col, line_name in enumerate(line_order):
+                    pl = per_line[line_name]
+                    meta_list = pl['meta_list']
+                    ind = next((i for i, (p, e, _) in enumerate(meta_list) if (p, e) == (pointing, exp_num)), None)
+                    wcs = WCS(pl['header_ref'])
+                    # Flux
+                    ax = fig.add_subplot(2, n_lines, col + 1, projection=wcs)
+                    if ind is not None:
+                        # show only S/N-selected region (same mask used for stats)
+                        r = pl['results'][ind]
+                        flux_plot = np.where(
+                            (pl['ratio_maps'][ind] > 0)
+                            & np.isfinite(pl['ratio_maps'][ind]),
+                            # & (pl['results'][ind]['n_overlap'] > 0),
+                            pl['stack'][ind],
+                            np.nan
+                        )
+                        ax.imshow(flux_plot, origin='lower', cmap='viridis',
+                                  vmin=pl['vmin'], vmax=pl['vmax'])
+                    else:
+                        ax.imshow(np.full(pl['median_map'].shape, np.nan), origin='lower', cmap='viridis')
+                    ax.set_title(f'{line_name} flux')
+                    # Ratio
+                    ax = fig.add_subplot(2, n_lines, n_lines + col + 1, projection=wcs)
+                    if ind is not None:
+                        # ratio map: only S/N-selected overlap pixels
+                        r = pl['results'][ind]
+                        rplot = np.where(
+                            np.isfinite(pl['ratio_maps'][ind]) & (pl['ratio_maps'][ind] > 0),
+                            pl['ratio_maps'][ind],
+                            np.nan
+                        )
+                        ax.imshow(rplot, origin='lower', cmap='RdBu_r', vmin=0.7, vmax=1.3)
+                        ax.set_title(
+                            f'ratio={r["mean_ratio"]:.3f}±{r["std_ratio"]:.3f}'
+                            + (' FLAG' if r['flagged'] else '')
+                        )
+                    else:
+                        ax.imshow(np.full(pl['median_map'].shape, np.nan), origin='lower', cmap='RdBu_r')
+                        ax.set_title('N/A')
+                plt.suptitle(f'{obj_name}: {pointing} exp{exp_num:08d}', y=1.02)
+                plt.tight_layout()
+                pdf.savefig(fig, bbox_inches='tight')
+                plt.close(fig)
+
+            # Last page: bar chart of mean_ratio per line (one subplot per line)
+            fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 4 * nrows))
+            if n_lines == 1:
+                axes = np.array([axes])
+            axes = axes.ravel()
+            for idx, line_name in enumerate(line_order):
+                ax = axes[idx]
+                pl = per_line[line_name]
+                res = pl['results']
+                labels = [f"{r['exp']}" for r in res]
+                x = np.arange(len(labels))
+                vals = [r['mean_ratio'] if np.isfinite(r['mean_ratio']) else np.nan for r in res]
+                thresh_low = 1.0 - ratio_deviation_threshold
+                thresh_high = 1.0 + ratio_deviation_threshold
+                ylabel = f'mean flux/median (S/N>{sn_min})'
+                colors = ['red' if r['flagged'] else 'steelblue' for r in res]
+                ax.bar(x, vals, color=colors, edgecolor='black')
+                ax.axhline(1.0, color='black', ls='--', lw=1)
+                ax.axhspan(thresh_low, thresh_high, color='red', alpha=0.2)
+                ax.set_xticks(x)
+                ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=7)
+                ax.set_ylabel(ylabel)
+                ax.set_title(f'{line_name}')
+                if np.any(np.isfinite(vals)):
+                    ymin = min(np.nanmin(vals), thresh_low) * 0.9
+                    ymax = max(np.nanmax(vals), thresh_high) * 1.1
+                else:
+                    ymin, ymax = 0.5, 1.5
+                ax.set_ylim(ymin, ymax)
+            for j in range(n_lines, len(axes)):
+                axes[j].set_visible(False)
+            plt.suptitle(f'{obj_name}: deviation from median, S/N>{sn_min} (red = flagged)', y=1.02)
+            plt.tight_layout()
+            pdf.savefig(fig, bbox_inches='tight')
+            plt.close(fig)
+        fix_permission(pdf_path)
+    except Exception as e:
+        log.warning(f"Could not write diagnostic PDF {pdf_path}: {e}")
+
 
 def metadata_parallel(mjd):
     """
@@ -4577,7 +4905,8 @@ def extract_spectra_ds9(config, w_dir=None):
                 log.warning(f"Can't correct spectra for velocity because "
                             f"the measurements in {correct_vel_line} are not found in RSS flux table")
                 correct_vel_line = None
-
+        if correct_vel_line is not None:
+            log.info(f"Correct velocity offsets using {correct_vel_line} measurements.")
         ras = table_fluxes['fib_ra']
         decs = table_fluxes['fib_dec']
         radec = SkyCoord(ra=ras, dec=decs, unit=('degree', 'degree'))
@@ -5002,7 +5331,9 @@ def reconstruct_cube(config, w_dir=None):
         for row_id, source_ids in tqdm(enumerate(table_fluxes['sourceid']), total=len(table_fluxes),
                                        desc='Fibers done:', ascii=True):
             source_ids = source_ids.split(', ')
-            fluxcorrs = np.array(table_fluxes['fluxcorr'][row_id].split(', ')).astype(float)
+            fluxcorrs_b = np.array(table_fluxes['fluxcorr_b'][row_id].split(', ')).astype(float)
+            fluxcorrs_r = np.array(table_fluxes['fluxcorr_r'][row_id].split(', ')).astype(float)
+            fluxcorrs_z = np.array(table_fluxes['fluxcorr_z'][row_id].split(', ')).astype(float)
             vhel_corr = np.array(table_fluxes['vhel_corr'][row_id].split(', ')).astype(float)
             cur_fluxes = None
             for cur_ind, source_id in enumerate(source_ids):
@@ -5013,8 +5344,17 @@ def reconstruct_cube(config, w_dir=None):
                     rssfile = os.path.join(cur_wdir, pointing, f'lvmCFrame-{expnum:0>8}.fits')
                 else:
                     rssfile = os.path.join(cur_wdir, pointing, f'lvmSFrame-{expnum:0>8}.fits')
-                with fits.open(rssfile) as rss:
-                    flux = rss['FLUX'].data[fib_id,rec_wave] * fluxcorrs[cur_ind]
+                with (fits.open(rssfile) as rss):
+                    flux = rss['FLUX'].data[fib_id,rec_wave]
+                    rec_b = wave[rec_wave] < 5750
+                    rec_r = (wave[rec_wave] >= 5750) & (wave[rec_wave] < 7600)
+                    rec_z = wave[rec_wave] >= 7600
+                    if np.sum(rec_b)>0:
+                        flux[rec_b] *= fluxcorrs_b[cur_ind]
+                    if np.sum(rec_r)>0:
+                        flux[rec_r] *= fluxcorrs_r[cur_ind]
+                    if np.sum(rec_z)>0:
+                        flux[rec_z] *= fluxcorrs_z[cur_ind]
                     delta_v = vhel_corr[cur_ind] - vhel_corr[0]
                     if abs(delta_v) > 3.:
                         flux = np.interp(wave[rec_wave], wave[rec_wave]*(1-delta_v/2.998e5), flux)
@@ -5693,14 +6033,15 @@ def create_single_rss(config, w_dir=None):
 
                 ave_vhel = np.mean(cur_vhel_corr)
                 for f_id in range(len(source_ids)):
-                    if np.max([np.nanmedian(lsf_corr[f_id, rec_b]),
-                               np.nanmedian(lsf_corr[f_id, rec_r]),
-                               np.nanmedian(lsf_corr[f_id, rec_z])]) > 0.3:
-                        fluxes[f_id, :] = lsf_convolve(fluxes[f_id, :], lsf_corr[f_id, :])
-                        fluxes_skycorr[f_id, :] = lsf_convolve(fluxes_skycorr[f_id, :], lsf_corr[f_id, :])
-                        skies[f_id, :] = lsf_convolve(skies[f_id, :], lsf_corr[f_id, :])
-                        ivars[f_id, :] = 1/lsf_convolve(1/ivars[f_id, :], lsf_corr[f_id, :], errors=True)
-                        sky_ivars[f_id, :] = 1 / lsf_convolve(1 / sky_ivars[f_id, :], lsf_corr[f_id, :], errors=True)
+                    # Temporarily disable LSF convolution as it takes too much time
+                    # if np.max([np.nanmedian(lsf_corr[f_id, rec_b]),
+                    #            np.nanmedian(lsf_corr[f_id, rec_r]),
+                    #            np.nanmedian(lsf_corr[f_id, rec_z])]) > 0.3:
+                    #     fluxes[f_id, :] = lsf_convolve(fluxes[f_id, :], lsf_corr[f_id, :])
+                    #     fluxes_skycorr[f_id, :] = lsf_convolve(fluxes_skycorr[f_id, :], lsf_corr[f_id, :])
+                    #     skies[f_id, :] = lsf_convolve(skies[f_id, :], lsf_corr[f_id, :])
+                    #     ivars[f_id, :] = 1/lsf_convolve(1/ivars[f_id, :], lsf_corr[f_id, :], errors=True)
+                    #     sky_ivars[f_id, :] = 1 / lsf_convolve(1 / sky_ivars[f_id, :], lsf_corr[f_id, :], errors=True)
 
                     # Apply velocity correction
                     delta_v = cur_vhel_corr[f_id] - ave_vhel
