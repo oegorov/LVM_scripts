@@ -3346,7 +3346,7 @@ def analyse_spectra(table_fluxes=None, mean_bounds=mean_bounds_fitline,
                                 partial_sky=config['imaging'].get('partial_sky'),
                                 path_to_fits=cur_wdir, velocity=sysvel,
                                 single_rss=single_rss, header=header,
-                                masking={'masking': config.get['masking']},
+                                masking={'masking': config.get('masking')},
                                 ), params),
                     ascii=True, desc="Calculate moment0 in all RSS",
                     total=len(table_fluxes), ):
