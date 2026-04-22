@@ -2,8 +2,6 @@
 import yaml
 from sdss_access import RsyncAccess
 
-from slitpos import slitpos
-
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -28,7 +26,6 @@ from astropy.wcs import WCS
 from functools import partial
 from astropy.table import Table, vstack, Column, join
 from astropy.coordinates import SkyCoord
-from astropy.modeling import fitting, models
 from scipy.ndimage import median_filter
 from astropy.stats import sigma_clip
 from astropy.time import Time
