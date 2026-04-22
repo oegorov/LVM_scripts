@@ -2,6 +2,8 @@
 import yaml
 from sdss_access import RsyncAccess
 
+from slitpos import slitpos
+
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -647,6 +649,74 @@ def create_folders_tree(config, w_dir=None):
         log.error("Something wrong with creation of the work folders tree:" + str(e))
         status = False
     return status
+
+def mask_local_artifact_dap(tab, config, curline_wl=None):
+    """
+    Manually masks suspicious signal in particular fibers and at particular wavelengths in DAP results
+    :param tab: subset from for one particular line DAP table
+    :param config: config file containing 'masking' properties
+    :param curline_wl: current wavelength
+    :return: updated DAP table
+    """
+    if 'masking' not in config:
+        return tab
+    all_masks = config['masking'].get('mask')
+    if all_masks is None or len(all_masks) == 0:
+        return tab
+    if isinstance(curline_wl, str):
+        curline_wl_float = float(curline_wl.split('_')[-1])
+    else:
+        curline_wl_float = float(curline_wl)
+    fib_prefix = str(tab['id'][0]).split('.')[0]
+    for cur_mask in all_masks:
+        fiber_id = cur_mask.get('fiber')
+        wl_range = cur_mask.get('wl_range')
+        if fiber_id is None or wl_range is None:
+            continue
+        rec_fib = np.flatnonzero(tab['id'] == f'{fib_prefix}.{fiber_id}')
+        if len(rec_fib) == 0:
+            continue
+        if (curline_wl_float > wl_range[0]) & (curline_wl_float < wl_range[1]):
+            if isinstance(curline_wl, str):
+                tab["flux_" + curline_wl][rec_fib] = np.nan
+            else:
+                tab["flux"][rec_fib] = np.nan
+    return tab
+
+
+def mask_local_artifact(rss, config):
+    """
+    Manually masks suspicious signal in particular fibers and at particular wavelengths
+    :param rss: HDU of SFrame
+    :param config: config file containing 'masking' properties
+    :return: updated HDU
+    """
+    if 'masking' not in config:
+        return rss
+    all_masks = config['masking'].get('mask')
+    if all_masks is None or len(all_masks) == 0:
+        return rss
+
+    wave = rss['WAVE'].data
+    slitmap = Table.read(rss['SLITMAP'])
+
+    for cur_mask in all_masks:
+        fiber_id = cur_mask.get('fiber')
+        wl_range = cur_mask.get('wl_range')
+        if fiber_id is None or wl_range is None:
+            continue
+        rec_fib = np.flatnonzero(slitmap['id'] == fiber_id)
+        if len(rec_fib) == 0:
+            continue
+        rec_wl = np.flatnonzero((wave >= wl_range[0]) & (wave <= wl_range[1]))
+        if len(rec_wl) == 0:
+            continue
+
+        rss['FLUX'].data[rec_fib, rec_wl] = np.nan
+        rss['MASK'].data[rec_fib, rec_wl] = 1
+
+    return rss
+
 
 def get_nonparametric_kinematics(spectrum, errors, lsf, wave, line_wave, vel_bounds=(-300., 300.),
                                  n_bootstrap=0, cont_level=None):
@@ -2650,6 +2720,9 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                 cur_table_fluxes_faint = cur_table_fluxes_faint_r
                             else:
                                 cur_table_fluxes_faint = cur_table_fluxes_faint_b
+                            if not local_dap_results:
+                                cur_table_fluxes_faint = mask_local_artifact_dap(cur_table_fluxes_faint, config,
+                                                                                 curline_wl=dap_results_correspondence[kw])
                             cur_table_summary = join(cur_table_summary, cur_table_fluxes_faint['id',
                                 "flux_" + dap_results_correspondence[kw], "e_flux_"+dap_results_correspondence[kw],
                                 "vel_" + dap_results_correspondence[kw], "e_vel_"+dap_results_correspondence[kw],
@@ -2675,8 +2748,12 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                             f"in parametric DAP results. Skipping...")
                                 continue
                             rec_cur_line = np.flatnonzero(cur_table_fluxes['wl'] == dap_results_correspondence[kw])
-                            cur_table_summary = join(cur_table_summary, cur_table_fluxes[rec_cur_line]['id','flux', 'e_flux',
-                                                    'vel', 'e_vel', 'disp', 'e_disp'], keys='id')
+                            subset_table = cur_table_fluxes[rec_cur_line]['id', 'flux', 'e_flux',
+                            'vel', 'e_vel', 'disp', 'e_disp']
+                            if not local_dap_results:
+                                subset_table = mask_local_artifact_dap(subset_table, config,
+                                                                curline_wl=dap_results_correspondence[kw])
+                            cur_table_summary = join(cur_table_summary, subset_table, keys='id')
                             # if kw == 'OI':
                             #     cur_table_summary['flux'] -= np.nanmedian(cur_table_summary['flux'])
                             cur_table_summary['flux'] *= cur_flux_corr[exp_id]
@@ -3271,7 +3348,8 @@ def analyse_spectra(table_fluxes=None, mean_bounds=mean_bounds_fitline,
                                 include_sky=config['imaging'].get('include_sky'),
                                 partial_sky=config['imaging'].get('partial_sky'),
                                 path_to_fits=cur_wdir, velocity=sysvel,
-                                single_rss=single_rss, header=header
+                                single_rss=single_rss, header=header,
+                                masking={'masking': config.get['masking']},
                                 ), params),
                     ascii=True, desc="Calculate moment0 in all RSS",
                     total=len(table_fluxes), ):
@@ -3307,7 +3385,7 @@ def analyse_spectra(table_fluxes=None, mean_bounds=mean_bounds_fitline,
                                 mean_bounds=mean_bounds, velocity=sysvel, header=header,
                                 include_sky=config['imaging'].get('include_sky'),
                                 partial_sky=config['imaging'].get('partial_sky'),
-                                path_to_fits=cur_wdir
+                                path_to_fits=cur_wdir, masking={'masking': config.get('masking')}
                                 ), params),
                     ascii=True, desc=desc,
                     total=len(table_fluxes), ):
@@ -3351,7 +3429,7 @@ def analyse_spectra(table_fluxes=None, mean_bounds=mean_bounds_fitline,
 
 
 def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sky=False, line_params=None,
-                        single_rss=True, header=None, velocity=0):
+                        single_rss=True, header=None, velocity=0, masking=None):
     # Note: sys. velocity is needed here only if partial_sky, as the wl_range are already corrected
     if not single_rss:
         ### Process multiple exposures
@@ -3373,6 +3451,7 @@ def quickflux_all_lines(params, path_to_fits=None, include_sky=False, partial_sk
                 rssfile = os.path.join(path_to_fits, pointing, f'lvmSFrame-{expnum:0>8}.fits')
 
             with fits.open(rssfile) as hdu:
+                hdu = mask_local_artifact(hdu, masking)
                 if wave is None:
                     wave = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
                                 hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] +
@@ -3797,7 +3876,7 @@ def create_line_image_from_table(file_fluxes=None, lines=None, pxscale_out=3., r
 
 
 def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sky=False, partial_sky=False,
-                              line_fit_params=None, mean_bounds=None, single_rss=True, velocity=0):
+                              line_fit_params=None, mean_bounds=None, single_rss=True, velocity=0, masking=None):
     if not single_rss:
         source_ids, flux_cors_b, flux_cors_r, flux_cors_z, vhel_corrs, bgr, spec_id = params
         source_ids = source_ids.split(', ')
@@ -3817,6 +3896,7 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
                 rssfile = os.path.join(path_to_fits, pointing, f'lvmSFrame-{expnum:0>8}.fits')
 
             with fits.open(rssfile) as hdu:
+                hdu = mask_local_artifact(hdu, masking)
                 if wl_grid is None:
                     wl_grid = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
                                 hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] +
@@ -4781,7 +4861,7 @@ def bin_rss(config, w_dir=None):
                              [cur_obj.get('velocity')] * len(in_reg),
                              [config['imaging'].get('include_sky')] * len(in_reg),
                              [config['imaging'].get('partial_sky')] * len(in_reg),
-                             [cur_wdir] * len(in_reg)
+                             [cur_wdir] * len(in_reg), [{'masking': config.get('masking')}] * len(in_reg)
                              )
             else:
                 params = zip(tab[in_reg]['sourceid'], tab[in_reg]['fluxcorr_b'],
@@ -4790,7 +4870,7 @@ def bin_rss(config, w_dir=None):
                              [cur_obj.get('velocity')] * len(in_reg),
                              [config['imaging'].get('include_sky')] * len(in_reg),
                              [config['imaging'].get('partial_sky')] * len(in_reg),
-                             [cur_wdir] * len(in_reg))
+                             [cur_wdir] * len(in_reg), [{'masking': config.get('masking')}] * len(in_reg))
 
             if config['imaging'].get('use_single_rss_file'):
                 res = []
@@ -5099,14 +5179,14 @@ def extract_spectra_ds9(config, w_dir=None):
                              [cur_obj.get('velocity')] * len(in_reg),
                              [config['imaging'].get('include_sky')] * len(in_reg),
                              [config['imaging'].get('partial_sky')] * len(in_reg),
-                             [cur_wdir] * len(in_reg)
+                             [cur_wdir] * len(in_reg), [{'masking': config.get('masking')}]*len(in_reg)
                              )
             else:
                 params = zip(sourceid, fluxcorr_b,
                              fluxcorr_r, fluxcorr_z,
                              table_fluxes[in_reg]['vhel_corr'].astype(str),[0]*len(in_reg), [cur_obj.get('velocity')]*len(in_reg),
                              [config['imaging'].get('include_sky')]*len(in_reg), [config['imaging'].get('partial_sky')]*len(in_reg),
-                             [cur_wdir]*len(in_reg))
+                             [cur_wdir]*len(in_reg), [{'masking': config.get('masking')}]*len(in_reg))
 
             nprocs = np.min([np.max([config.get('nprocs'), 1]), len(in_reg)])
             with mp.Pool(processes=nprocs) as pool:
@@ -5174,7 +5254,7 @@ def extract_spectra_ds9(config, w_dir=None):
 def extract_spectrum_for_cur_fiber(params, hdu=None):
 
     (source_ids, flux_cors_b, flux_cors_r, flux_cors_z, vhel_corrs, corr_vel_line,
-     velocity, include_sky, partial_sky, path_to_fits) = params
+     velocity, include_sky, partial_sky, path_to_fits, masking) = params
     source_ids = source_ids.split(', ')
     flux_cors_b = flux_cors_b.split(', ')
     flux_cors_r = flux_cors_r.split(', ')
@@ -5196,6 +5276,7 @@ def extract_spectrum_for_cur_fiber(params, hdu=None):
             else:
                 rssfile = os.path.join(path_to_fits, pointing, f'lvmSFrame-{expnum:0>8}.fits')
             hdu = fits.open(rssfile)
+            hdu = mask_local_artifact(hdu, masking)
 
         if wl_grid is None:
             wl_grid = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
@@ -5966,6 +6047,7 @@ def create_single_rss(config, w_dir=None):
                 f = fs[0]
                 spec_id = sp_ids[0]
                 with fits.open(f) as hdu:
+                    hdu = mask_local_artifact(hdu, config)
                     wl_grid = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
                                 hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] +
                                hdu['FLUX'].header['CRVAL1'])
@@ -6016,6 +6098,7 @@ def create_single_rss(config, w_dir=None):
                 for f_id, f in enumerate(fs):
                     spec_id = sp_ids[f_id]
                     with fits.open(f) as hdu:
+                        hdu = mask_local_artifact(hdu, config)
                         if f_id == 0:
                             wl_grid = ((np.arange(hdu['FLUX'].header['NAXIS1']) -
                                         hdu['FLUX'].header['CRPIX1'] + 1) * hdu['FLUX'].header['CDELT1'] +
