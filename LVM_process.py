@@ -734,7 +734,8 @@ def get_nonparametric_kinematics(spectrum, errors, lsf, wave, line_wave, vel_bou
 
 
 def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0, mean_bounds=(-10., 10.),
-                       ax=None, return_plot_data=False, subtract_lsf=True, max_n_comp=None, tie_disp=None, tie_vel=None):
+                       ax=None, return_plot_data=False, subtract_lsf=True, max_n_comp=None, tie_disp=None, tie_vel=None,
+                       return_lmfit_result=False, fixed_n_comp=None):
     """
     Fit current spectrum with multiple Gaussians. Each line can have several components.
     First components may be tied together or not. Second etc. components are always tied
@@ -750,6 +751,9 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
     :param return_plot_data:
     :param subtract_lsf:
     :param max_n_comp:
+    :param return_lmfit_result: If True, append the lmfit ModelResult as the last return value (for BIC, etc.).
+    :param fixed_n_comp: If set, fit exactly this number of components per line (scalar or length len(lines));
+        skips the adaptive add-component loop (for explicit 1- vs 2-component model comparison).
     :return:
     """
     spectrum, errors, lsf = data
@@ -757,11 +761,14 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
                          np.isfinite(errors) & (np.isfinite(lsf)) & (lsf > 0) & np.isfinite(wave))  # & (errors > 0)
     if len(rec) < 10:
         if return_plot_data:
-            return [np.nan] * len(lines), [np.nan] * len(lines), [np.nan] * len(lines), np.nan, [np.nan] * len(
-                lines), np.nan, np.nan, np.nan, None, None, None
+            out = ([np.nan] * len(lines), [np.nan] * len(lines), [np.nan] * len(lines), np.nan, [np.nan] * len(
+                lines), np.nan, np.nan, np.nan, None, None, None)
         else:
-            return [np.nan] * len(lines), [np.nan] * len(lines), [np.nan] * len(lines), np.nan, [np.nan] * len(
-                lines), np.nan, np.nan, np.nan, None, None
+            out = ([np.nan] * len(lines), [np.nan] * len(lines), [np.nan] * len(lines), np.nan, [np.nan] * len(
+                lines), np.nan, np.nan, np.nan, None, None)
+        if return_lmfit_result:
+            return out + (None,)
+        return out
 
     spectrum = spectrum[rec]/1e-16
     errors = errors[rec]/1e-16
@@ -784,9 +791,20 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
     flux_guess = max_ampl * mean_std * np.sqrt(2*np.pi)
     res = None
     nonparametric_fit = None
+    fixed_once = False
     while np.sum(cur_n_comps) <= n_max_lines:
 
-        if np.sum(cur_n_comps) == 0:
+        if fixed_n_comp is not None:
+            if fixed_once:
+                break
+            if np.ndim(fixed_n_comp) == 0:
+                cur_n_comps = np.full(len(lines), int(fixed_n_comp), dtype=int)
+            else:
+                cur_n_comps = np.asarray(fixed_n_comp, dtype=int).ravel()
+                if len(cur_n_comps) != len(lines):
+                    raise ValueError("fixed_n_comp must be a scalar or array of length len(lines)")
+            fixed_once = True
+        elif np.sum(cur_n_comps) == 0:
             cur_n_comps = np.ones_like(lines, dtype=int)
         else:
             rec = np.flatnonzero(cur_n_comps < max_n_comp)
@@ -818,9 +836,14 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
                     pars[f"gaus{l_id}{cmp}_center"].set(
                         expr=f'gaus{ids_with_this_number_of_comp[0]}{cmp}_center*{lines[ids_with_this_number_of_comp[cmp]]/lines[0]}')
                 elif cmp > 0:
-                    l0 = res.params[f'gaus{l_id}0_center'].value
-                    if l0 is None or ~np.isfinite(l0):
-                        l0 = l*(1+velocity/2.998e5)
+                    # Second+ component on the reference line: previous fit exists only in the adaptive
+                    # multi-pass loop. For ``fixed_n_comp`` (single pass), ``res`` is still None — use rest guess.
+                    if res is not None:
+                        l0 = res.params[f'gaus{l_id}0_center'].value
+                    else:
+                        l0 = None
+                    if l0 is None or not np.isfinite(l0):
+                        l0 = l * (1 + velocity / 2.998e5)
                     pars[f"gaus{l_id}{cmp}_center"].set(value=l0,
                                                         min=l0 - 3.,
                                                         max=l0 + 3., vary=True)
@@ -866,6 +889,8 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
             res = my_model.fit(spectrum, pars, x=wave, weights=1/errors)
 
         # print(res.redchi, res.chisqr, (np.nansum(errors.ravel()**2)/np.nansum(spectrum.ravel()**2)))
+        if fixed_n_comp is not None:
+            break
         if (len(lines) == 1) and (np.sum(cur_n_comps) == len(lines)) and (np.sum(cur_n_comps) < n_max_lines):
             # check if velocities or dispersions are not in agreement with those from non-parametric fit
             # THIS WORKS ONLY FOR SINGLE LINE FITTING
@@ -972,9 +997,12 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
         ax.legend()
     if return_plot_data:
         plot_data = (wave, spectrum, res.eval(**res.best_values, x=wave))
-        return fluxes, vel, disp, cont, fluxes_err, vel_err, disp_err, cont_err, other_comps[0], other_comps[1], plot_data
+        out = (fluxes, vel, disp, cont, fluxes_err, vel_err, disp_err, cont_err, other_comps[0], other_comps[1], plot_data)
     else:
-        return fluxes, vel, disp, cont, fluxes_err, vel_err, disp_err, cont_err, other_comps[0], other_comps[1],
+        out = (fluxes, vel, disp, cont, fluxes_err, vel_err, disp_err, cont_err, other_comps[0], other_comps[1])
+    if return_lmfit_result:
+        return out + (res,)
+    return out
 
 
 def deep_merge(dest, src):
@@ -1488,168 +1516,168 @@ def control_exposures(config, w_dir=None):
         # --- 2) Per-exposure analysis and maps
         old_lines = config['imaging'].get('lines')
 
-        # for cur_pointing in cur_obj['pointing']:
-        #     p_name = cur_pointing['name']
-        #     for data in cur_pointing['data']:
-        #         if isinstance(data['exp'], int):
-        #             exps = [data['exp']]
-        #         else:
-        #             exps = data['exp']
-        #
-        #         # flux corrections (per exposure)
-        #         if not data.get('flux_correction'):
-        #             cur_flux_corr_b = [1.] * len(exps)
-        #             cur_flux_corr_r = [1.] * len(exps)
-        #             cur_flux_corr_z = [1.] * len(exps)
-        #         else:
-        #             cur_flux_corr_b = data['flux_correction']
-        #             cur_flux_corr_r = data['flux_correction']
-        #             cur_flux_corr_z = data['flux_correction']
-        #         if isinstance(cur_flux_corr_r, float) or isinstance(cur_flux_corr_r, int):
-        #             cur_flux_corr_b = [cur_flux_corr_b]
-        #             cur_flux_corr_r = [cur_flux_corr_r]
-        #             cur_flux_corr_z = [cur_flux_corr_z]
-        #         cur_flux_corr_b = np.array(cur_flux_corr_b)
-        #         cur_flux_corr_r = np.array(cur_flux_corr_r)
-        #         cur_flux_corr_z = np.array(cur_flux_corr_z)
-        #
-        #         for exp_id, exp in enumerate(exps):
-        #             cur_fname = os.path.join(cur_obj_wdir, p_name, f'lvmSFrame-{exp:08d}.fits')
-        #             if not os.path.exists(cur_fname):
-        #                 log.warning(f"Can't find {cur_fname}")
-        #                 tileid = data['tileid'][exp_id]
-        #                 if obj_name == 'Orion':
-        #                     if (int(tileid) < 1027000) & (int(tileid) != 11111):
-        #                         tileid = str(int(tileid) + 27748)
-        #
-        #                 if str(tileid) == '11111':
-        #                     short_tileid = '0011XX'
-        #                 elif str(tileid) == '999':
-        #                     short_tileid = '0000XX'
-        #                 else:
-        #                     short_tileid = str(tileid)[:4] + 'XX'
-        #                 cur_fname_source = os.path.join(drp_results_dir_sas, short_tileid, str(tileid),
-        #                                                 str(data['mjd']), f'lvmSFrame-{exp:08d}.fits')
-        #                 if not os.path.exists(cur_fname_source):
-        #                     log.warning(f"It is also not found in reduced files from SAS")
-        #                     continue
-        #                 else:
-        #                     log.warning(f"Found in files downloaded from SAS. Copying...")
-        #                     shutil.copy(cur_fname_source, cur_fname)
-        #
-        #             with fits.open(cur_fname) as rss:
-        #                 cur_table_fibers = Table(rss['SLITMAP'].data)
-        #                 cur_obstime = Time(rss[0].header['OBSTIME'])
-        #                 sci = cur_table_fibers['targettype'] == 'science'
-        #                 if config['imaging'].get('skip_bad_fibers'):
-        #                     sci = sci & (cur_table_fibers['fibstatus'] == 0)
-        #                 sci = np.flatnonzero(sci)
-        #
-        #                 fc = test_calibrations(rss, exp, check_mode='SCI',
-        #                                        fallback_mode=config['imaging'].get('fallback_fluxcal'),
-        #                                        force_fallback=config['imaging'].get('force_calib'))
-        #
-        #                 cur_flux_corr_b_exp = cur_flux_corr_b[exp_id] * fc[0]
-        #                 cur_flux_corr_r_exp = cur_flux_corr_r[exp_id] * fc[1]
-        #                 cur_flux_corr_z_exp = cur_flux_corr_z[exp_id] * fc[2]
-        #
-        #                 residual_background = 0
-        #                 try:
-        #                     radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
-        #                                              dec=rss[0].header['POSCIDE'],
-        #                                              unit=('degree', 'degree'))
-        #                 except ValueError:
-        #                     radec_central = SkyCoord(ra=np.nanmedian(cur_table_fibers[sci]['ra']),
-        #                                              dec=np.nanmedian(cur_table_fibers[sci]['dec']),
-        #                                              unit=('degree', 'degree'))
-        #
-        #             vcorr = np.round(
-        #                 radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
-        #                                                          location=obs_loc).to(u.km / u.s).value,
-        #                 1)
-        #
-        #             cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy()
-        #             cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
-        #
-        #             cur_table_summary.add_columns(
-        #                 (
-        #                     Column(
-        #                         np.array(
-        #                             [f'{p_name}_{exp:08d}_{cur_fibid:04d}'
-        #                              for cur_fibid in cur_table_fibers[sci]["fiberid"]]
-        #                         ),
-        #                         name='sourceid', dtype=object
-        #                     ),
-        #                     Column(
-        #                         np.array([str(cur_flux_corr_b_exp)] * len(sci)),
-        #                         name='fluxcorr_b', dtype=object
-        #                     ),
-        #                     Column(
-        #                         np.array([str(cur_flux_corr_r_exp)] * len(sci)),
-        #                         name='fluxcorr_r', dtype=object
-        #                     ),
-        #                     Column(
-        #                         np.array([str(cur_flux_corr_z_exp)] * len(sci)),
-        #                         name='fluxcorr_z', dtype=object
-        #                     ),
-        #                     Column(
-        #                         np.array([str(vcorr)] * len(sci)),
-        #                         name='vhel_corr', dtype=object
-        #                     ),
-        #                     Column(
-        #                         np.array([str(residual_background)] * len(sci)),
-        #                         name='bgr', dtype=object
-        #                     )
-        #                 )
-        #             )
-        #
-        #             table_fluxes_exp = cur_table_summary
-        #
-        #             # Run simple analysis for the selected lines (reusing analyse_spectra)
-        #             config['imaging']['lines'] = lines
-        #             table_fluxes_exp, cur_status = analyse_spectra(
-        #                 table_fluxes=table_fluxes_exp, mean_bounds=mean_bounds_fitline,
-        #                 sysvel=cur_obj.get('velocity'), config=config,
-        #                 cur_wdir=cur_obj_wdir
-        #             )
-        #             config['imaging']['lines'] = old_lines
-        #
-        #             if not cur_status:
-        #                 log.error(f"Control-exposure analysis failed for object={obj_name}, "
-        #                           f"pointing={p_name}, exp={exp}")
-        #                 status_out = False
-        #                 continue
-        #
-        #             # Cast string-like columns to fixed-width unicode before writing to FITS
-        #             for kw in ['sourceid', 'fluxcorr_b', 'fluxcorr_r', 'fluxcorr_z',
-        #                        'vhel_corr', 'bgr']:
-        #                 if kw in table_fluxes_exp.colnames:
-        #                     maxlen = max(len(str(s)) for s in table_fluxes_exp[kw])
-        #                     table_fluxes_exp[kw] = table_fluxes_exp[kw].astype(f'<U{maxlen}')
-        #
-        #             # Save per-exposure flux table
-        #             f_tab_exp = os.path.join(
-        #                 cur_obj_wdir,
-        #                 f"{obj_name}_{p_name}_exp{exp:08d}_fluxes_individual.fits"
-        #             )
-        #             table_fluxes_exp.write(f_tab_exp, overwrite=True, format='fits')
-        #             fix_permission(f_tab_exp)
-        #
-        #             # Create per-exposure maps on the common grid
-        #             status_img = create_line_image_from_table(
-        #                 file_fluxes=f_tab_exp,
-        #                 lines=lines,
-        #                 pxscale_out=pxscale_ctrl,
-        #                 r_lim=r_lim_ctrl,
-        #                 sigma=sigma_ctrl,
-        #                 output_dir=maps_dir,
-        #                 outfile_prefix=f"{obj_name}_{version}_{p_name}_exp{exp:08d}_{pxscale_ctrl}asec",
-        #                 wcs_out=wcs_out,
-        #                 shape_out=shape_out
-        #             )
-        #             if not status_img:
-        #                 log.error(f"Creating maps for object={obj_name}, pointing={p_name}, exp={exp} failed.")
-        #                 status_out = False
+        for cur_pointing in cur_obj['pointing']:
+            p_name = cur_pointing['name']
+            for data in cur_pointing['data']:
+                if isinstance(data['exp'], int):
+                    exps = [data['exp']]
+                else:
+                    exps = data['exp']
+
+                # flux corrections (per exposure)
+                if not data.get('flux_correction'):
+                    cur_flux_corr_b = [1.] * len(exps)
+                    cur_flux_corr_r = [1.] * len(exps)
+                    cur_flux_corr_z = [1.] * len(exps)
+                else:
+                    cur_flux_corr_b = data['flux_correction']
+                    cur_flux_corr_r = data['flux_correction']
+                    cur_flux_corr_z = data['flux_correction']
+                if isinstance(cur_flux_corr_r, float) or isinstance(cur_flux_corr_r, int):
+                    cur_flux_corr_b = [cur_flux_corr_b]
+                    cur_flux_corr_r = [cur_flux_corr_r]
+                    cur_flux_corr_z = [cur_flux_corr_z]
+                cur_flux_corr_b = np.array(cur_flux_corr_b)
+                cur_flux_corr_r = np.array(cur_flux_corr_r)
+                cur_flux_corr_z = np.array(cur_flux_corr_z)
+
+                for exp_id, exp in enumerate(exps):
+                    cur_fname = os.path.join(cur_obj_wdir, p_name, f'lvmSFrame-{exp:08d}.fits')
+                    if not os.path.exists(cur_fname):
+                        log.warning(f"Can't find {cur_fname}")
+                        tileid = data['tileid'][exp_id]
+                        if obj_name == 'Orion':
+                            if (int(tileid) < 1027000) & (int(tileid) != 11111):
+                                tileid = str(int(tileid) + 27748)
+
+                        if str(tileid) == '11111':
+                            short_tileid = '0011XX'
+                        elif str(tileid) == '999':
+                            short_tileid = '0000XX'
+                        else:
+                            short_tileid = str(tileid)[:4] + 'XX'
+                        cur_fname_source = os.path.join(drp_results_dir_sas, short_tileid, str(tileid),
+                                                        str(data['mjd']), f'lvmSFrame-{exp:08d}.fits')
+                        if not os.path.exists(cur_fname_source):
+                            log.warning(f"It is also not found in reduced files from SAS")
+                            continue
+                        else:
+                            log.warning(f"Found in files downloaded from SAS. Copying...")
+                            shutil.copy(cur_fname_source, cur_fname)
+
+                    with fits.open(cur_fname) as rss:
+                        cur_table_fibers = Table(rss['SLITMAP'].data)
+                        cur_obstime = Time(rss[0].header['OBSTIME'])
+                        sci = cur_table_fibers['targettype'] == 'science'
+                        if config['imaging'].get('skip_bad_fibers'):
+                            sci = sci & (cur_table_fibers['fibstatus'] == 0)
+                        sci = np.flatnonzero(sci)
+
+                        fc = test_calibrations(rss, exp, check_mode='SCI',
+                                               fallback_mode=config['imaging'].get('fallback_fluxcal'),
+                                               force_fallback=config['imaging'].get('force_calib'))
+
+                        cur_flux_corr_b_exp = cur_flux_corr_b[exp_id] * fc[0]
+                        cur_flux_corr_r_exp = cur_flux_corr_r[exp_id] * fc[1]
+                        cur_flux_corr_z_exp = cur_flux_corr_z[exp_id] * fc[2]
+
+                        residual_background = 0
+                        try:
+                            radec_central = SkyCoord(ra=rss[0].header['POSCIRA'],
+                                                     dec=rss[0].header['POSCIDE'],
+                                                     unit=('degree', 'degree'))
+                        except ValueError:
+                            radec_central = SkyCoord(ra=np.nanmedian(cur_table_fibers[sci]['ra']),
+                                                     dec=np.nanmedian(cur_table_fibers[sci]['dec']),
+                                                     unit=('degree', 'degree'))
+
+                    vcorr = np.round(
+                        radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
+                                                                 location=obs_loc).to(u.km / u.s).value,
+                        1)
+
+                    cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy()
+                    cur_table_summary.rename_columns(['ra', 'dec'], ['fib_ra', 'fib_dec'])
+
+                    cur_table_summary.add_columns(
+                        (
+                            Column(
+                                np.array(
+                                    [f'{p_name}_{exp:08d}_{cur_fibid:04d}'
+                                     for cur_fibid in cur_table_fibers[sci]["fiberid"]]
+                                ),
+                                name='sourceid', dtype=object
+                            ),
+                            Column(
+                                np.array([str(cur_flux_corr_b_exp)] * len(sci)),
+                                name='fluxcorr_b', dtype=object
+                            ),
+                            Column(
+                                np.array([str(cur_flux_corr_r_exp)] * len(sci)),
+                                name='fluxcorr_r', dtype=object
+                            ),
+                            Column(
+                                np.array([str(cur_flux_corr_z_exp)] * len(sci)),
+                                name='fluxcorr_z', dtype=object
+                            ),
+                            Column(
+                                np.array([str(vcorr)] * len(sci)),
+                                name='vhel_corr', dtype=object
+                            ),
+                            Column(
+                                np.array([str(residual_background)] * len(sci)),
+                                name='bgr', dtype=object
+                            )
+                        )
+                    )
+
+                    table_fluxes_exp = cur_table_summary
+
+                    # Run simple analysis for the selected lines (reusing analyse_spectra)
+                    config['imaging']['lines'] = lines
+                    table_fluxes_exp, cur_status = analyse_spectra(
+                        table_fluxes=table_fluxes_exp, mean_bounds=mean_bounds_fitline,
+                        sysvel=cur_obj.get('velocity'), config=config,
+                        cur_wdir=cur_obj_wdir
+                    )
+                    config['imaging']['lines'] = old_lines
+
+                    if not cur_status:
+                        log.error(f"Control-exposure analysis failed for object={obj_name}, "
+                                  f"pointing={p_name}, exp={exp}")
+                        status_out = False
+                        continue
+
+                    # Cast string-like columns to fixed-width unicode before writing to FITS
+                    for kw in ['sourceid', 'fluxcorr_b', 'fluxcorr_r', 'fluxcorr_z',
+                               'vhel_corr', 'bgr']:
+                        if kw in table_fluxes_exp.colnames:
+                            maxlen = max(len(str(s)) for s in table_fluxes_exp[kw])
+                            table_fluxes_exp[kw] = table_fluxes_exp[kw].astype(f'<U{maxlen}')
+
+                    # Save per-exposure flux table
+                    f_tab_exp = os.path.join(
+                        cur_obj_wdir,
+                        f"{obj_name}_{p_name}_exp{exp:08d}_fluxes_individual.fits"
+                    )
+                    table_fluxes_exp.write(f_tab_exp, overwrite=True, format='fits')
+                    fix_permission(f_tab_exp)
+
+                    # Create per-exposure maps on the common grid
+                    status_img = create_line_image_from_table(
+                        file_fluxes=f_tab_exp,
+                        lines=lines,
+                        pxscale_out=pxscale_ctrl,
+                        r_lim=r_lim_ctrl,
+                        sigma=sigma_ctrl,
+                        output_dir=maps_dir,
+                        outfile_prefix=f"{obj_name}_{version}_{p_name}_exp{exp:08d}_{pxscale_ctrl}asec",
+                        wcs_out=wcs_out,
+                        shape_out=shape_out
+                    )
+                    if not status_img:
+                        log.error(f"Creating maps for object={obj_name}, pointing={p_name}, exp={exp} failed.")
+                        status_out = False
 
         # restore imaging lines
         config['imaging']['lines'] = old_lines
@@ -2536,6 +2564,20 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                         with fits.open(cur_fname) as rss:
                             cur_table_fibers = Table(rss['PT'].data)
                             sci = np.arange(len(cur_table_fibers)).astype(int)
+                        if 'vhel_corr' not in cur_table_fibers.colnames:
+
+                            with fits.open(cur_fname_spec) as rss:
+                                tmp_tab = Table(rss['SLITMAP'].data)
+                                if 'vhel_corr' not in tmp_tab.colnames:
+                                    cur_table_fibers.add_column(Column(np.zeros(len(cur_table_fibers)),
+                                                                       name='vhel_corr', dtype=float))
+                                else:
+                                    tmp_tab = tmp_tab[tmp_tab['targettype'] == 'science']
+                                    cur_table_fibers = join(cur_table_fibers,
+                                                            tmp_tab['fiberid', 'vhel_corr'],
+                                                            keys='fiberid',
+                                                            join_type='left')
+
                     except KeyError:
                         with fits.open(cur_fname_spec) as rss:
                             cur_table_fibers = Table(rss['SLITMAP'].data)
@@ -2577,10 +2619,13 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                                      unit=('degree', 'degree'))
                         vcorr = np.round(radec_central.radial_velocity_correction(kind='heliocentric', obstime=cur_obstime,
                                                                                   location=obs_loc).to(u.km / u.s).value,1)
+                        vcorr = np.array([float(vcorr)] * len(cur_table_summary))
                         id_prefix = int(exp)
 
                     else:
-                        vcorr = 0.
+                        vcorr = np.array([float(cur_row['vhel_corr']) for cur_row in cur_table_fibers[sci]])
+                        # vcorr = 0
+                        # vcorr = cur_table_fibers[sci]['vhel_corr']
                         id_prefix = int(str(cur_table_fluxes[0]['id']).split('.')[0])
 
                     cur_table_summary = cur_table_fibers[sci]['ra', 'dec'].copy() #
@@ -2591,7 +2636,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                                name='id', dtype=str),
                          Column(np.array([str(cur_flux_corr[exp_id])] * len(cur_table_summary)),
                                 name='fluxcorr', dtype=float),
-                         Column(np.array([str(vcorr)] * len(cur_table_summary)), name='vhel_corr',
+                         Column(vcorr, name='vhel_corr',
                                 dtype=float)]
                          )
                     if 'binnum' in cur_table_fibers.colnames:
@@ -2613,7 +2658,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
 
                             cur_table_summary["flux_"+dap_results_correspondence[kw]] *= cur_flux_corr[exp_id]
                             cur_table_summary["e_flux_"+dap_results_correspondence[kw]] *= cur_flux_corr[exp_id]
-                            cur_table_summary["vel_" + dap_results_correspondence[kw]] += vcorr
+                            cur_table_summary["vel_" + dap_results_correspondence[kw]] += cur_table_summary['vhel_corr']
                             cur_table_summary["disp_" + dap_results_correspondence[kw]] /= (curline_wl / 2.998e5)
                             cur_table_summary["e_disp_"+dap_results_correspondence[kw]] /= (curline_wl / 2.998e5)
                             cur_table_summary.rename_columns(["flux_"+dap_results_correspondence[kw],
@@ -2636,7 +2681,7 @@ def parse_dap_results(config, w_dir=None, local_dap_results=False, mode=None):
                             #     cur_table_summary['flux'] -= np.nanmedian(cur_table_summary['flux'])
                             cur_table_summary['flux'] *= cur_flux_corr[exp_id]
                             cur_table_summary['e_flux'] *= cur_flux_corr[exp_id]
-                            cur_table_summary['vel'] += vcorr
+                            cur_table_summary['vel'] += cur_table_summary['vhel_corr']
                             cur_table_summary['disp'] /= (dap_results_correspondence[kw] / 2.998e5)
                             cur_table_summary['e_disp'] /= (dap_results_correspondence[kw] / 2.998e5)
                             cur_table_summary.rename_columns(['flux', 'e_flux', 'vel', 'e_vel', 'disp', 'e_disp'],
@@ -3094,7 +3139,8 @@ def analyse_spectra(table_fluxes=None, mean_bounds=mean_bounds_fitline,
     :param sysvel: systemic velocity to correct wavelengths
     :param config: configuration dictionary
     :param cur_wdir: current working directory (if single_rss=False)
-    :return:
+    :return: table with measured velocities (vhel corrected), velocity dispersion (LSF corrected),
+            fluxes (erg/s/cm^2/arcsec^2), their errors etc
     """
     log.info("Analysing spectra")
 
@@ -5115,6 +5161,7 @@ def extract_spectra_ds9(config, w_dir=None):
         rss_out.append(fits.BinTableHDU(tab_slitmap_out, name='SLITMAP'))
         rss_out['FLUX'].header['BUNIT'] = 'erg/s/cm^2/A/fiber'
 
+
         rss_out.writeto(f_out, overwrite=True)
         fix_permission(f_out)
         fig.savefig(f_out.replace(".fits", '.pdf'), dpi=300, bbox_inches='tight')
@@ -6059,6 +6106,7 @@ def create_single_rss(config, w_dir=None):
                 tab_summary['lsfcorr_b'][ind_row] = lsf_corr_b
                 tab_summary['lsfcorr_r'][ind_row] = lsf_corr_r
                 tab_summary['lsfcorr_z'][ind_row] = lsf_corr_z
+                tab_summary['vhel_corr'][ind_row] = ave_vhel
 
                 rss_out['FLUX_SKYCORR'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes_skycorr, sigma=sigma_clip_value, axis=0, masked=False), axis=0)
                 rss_out['FLUX'].data[ind_row, :] = np.nanmean(sigma_clip(fluxes, sigma=sigma_clip_value, axis=0, masked=False), axis=0)
