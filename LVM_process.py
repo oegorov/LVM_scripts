@@ -702,7 +702,7 @@ def mask_local_artifact(rss, config):
         wl_range = cur_mask.get('wl_range')
         if fiber_id is None or wl_range is None:
             continue
-        rec_fib = np.flatnonzero(slitmap['id'] == fiber_id)
+        rec_fib = np.flatnonzero(slitmap['fiberid'] == fiber_id)
         if len(rec_fib) == 0:
             continue
         rec_wl = np.flatnonzero((wave >= wl_range[0]) & (wave <= wl_range[1]))
@@ -1163,12 +1163,6 @@ def parse_config(config_filename):
                 return None
 
             deep_merge(config['imaging'], lineconf['imaging'])
-
-    all_masks = config['masking'].get('mask')
-    log.info(all_masks)
-    for cur_mask in all_masks:
-        log.info(cur_mask)
-        log.info(cur_mask.get('fiber'))
 
     return config
 
