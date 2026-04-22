@@ -1164,6 +1164,12 @@ def parse_config(config_filename):
 
             deep_merge(config['imaging'], lineconf['imaging'])
 
+    all_masks = config['masking'].get('mask')
+    log.info(all_masks)
+    for cur_mask in all_masks:
+        log.info(cur_mask)
+        log.info(cur_mask.get('fiber'))
+
     return config
 
 
