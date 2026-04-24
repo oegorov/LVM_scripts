@@ -655,7 +655,7 @@ def mask_local_artifact_dap(tab, config, curline_wl=None):
     :param curline_wl: current wavelength
     :return: updated DAP table
     """
-    if 'masking' not in config:
+    if not config.get('masking'):
         return tab
     all_masks = config['masking'].get('mask')
     if all_masks is None or len(all_masks) == 0:
@@ -688,7 +688,7 @@ def mask_local_artifact(rss, config):
     :param config: config file containing 'masking' properties
     :return: updated HDU
     """
-    if 'masking' not in config:
+    if not config.get('masking'):
         return rss
     all_masks = config['masking'].get('mask')
     if all_masks is None or len(all_masks) == 0:
