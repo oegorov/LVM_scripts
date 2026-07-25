@@ -153,6 +153,7 @@ use_dap = false
 fallback_fluxcal = false  # "SCI" (default), 'MOD', 'STD' or false (to skip) -> if problems detected with the current fluxcal, this fallback will be used instead (just normalization will be applied)
 force_calib = false # if true, then normalization to fallback_fluxcal will be applied to all exposures
 include_sky = false # if true, then subtracted sky will be added back before the flux extraction
+use_emission_spec = false # if true and FLUX_EMIS extension is present, use it instead of FLUX for line fitting and mom0
 use_single_rss_file = false # if true, then creates single RSS file with all individual fibers and process this file.
 use_binned_rss_file = false # if true, then process binned RSS file.  
 override_flux_table = true # if true, then overwrites table with measured fluxes every time (otherwise - tries to add new/update existing measurements instead)
@@ -191,6 +192,8 @@ file_output_suffix = '_extracted.fits'
 [dap_fitting]
 fit_mode = 'rss' # can be 'extracted' (i.e. based on ds9-masks), 'binned' (i.e. extracted in voronoi bins) or 'rss' (i.e. huge single RSS file)
 skip_running_dap = false # if true, then assume dap results already exist and only extract the measurements (useful if there were external changes in DAP results)
+create_dap_output = true # if true, run lvm-dap-gen-out-mod to create the DAP model output file
+create_emis_extension = true # if true and DAP output exists, subtract model_spec and write FLUX_EMIS to the RSS file
 
 
 # =======================================

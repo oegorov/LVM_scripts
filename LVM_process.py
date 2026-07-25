@@ -505,6 +505,11 @@ def LVM_process(config_filename=None, output_dir=None):
                     return
             else:
                 log.info("Skip running DAP and go directly to the results parsing")
+            if config['dap_fitting'].get('create_emis_extension', True):
+                status = process_flux_emis_extensions(config, output_dir=cur_wdir, fit_mode='rss',
+                                                      testdap_prefix=config['dap_fitting'].get('testdap_prefix'))
+                if not status:
+                    return
             log.info("Processing DAP results")
             status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='single_rss')
         elif config['dap_fitting'].get('fit_mode') == 'binned':
@@ -519,6 +524,10 @@ def LVM_process(config_filename=None, output_dir=None):
                     return
             else:
                 log.info("Skip running DAP and go directly to the results parsing")
+            if config['dap_fitting'].get('create_emis_extension', True):
+                status = process_flux_emis_extensions(config, output_dir=cur_wdir, fit_mode='binned')
+                if not status:
+                    return
             log.info("Processing DAP results")
             status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='binned')
         elif config['dap_fitting'].get('fit_mode') == 'extracted':
@@ -530,6 +539,10 @@ def LVM_process(config_filename=None, output_dir=None):
                     return
             else:
                 log.info("Skip running DAP and go directly to the results parsing")
+            if config['dap_fitting'].get('create_emis_extension', True):
+                status = process_flux_emis_extensions(config, output_dir=cur_wdir, fit_mode='extracted')
+                if not status:
+                    return
             status = parse_dap_results(config, w_dir=cur_wdir, local_dap_results=True, mode='extracted')
         else:
             log.error("Wrong DAP fit mode. It can be either 'rss', 'binned' or 'extracted'. Exit.")
@@ -824,8 +837,12 @@ def fit_cur_spec_lmfit(data, wave=None, lines=None, fix_ratios=None, velocity=0,
     :return:
     """
     spectrum, errors, lsf = data
-    rec = np.flatnonzero(np.isfinite(spectrum) & (spectrum != 0) &
-                         np.isfinite(errors) & (np.isfinite(lsf)) & (lsf > 0) & np.isfinite(wave))  # & (errors > 0)
+    rec = np.flatnonzero(
+        np.isfinite(spectrum) & (spectrum != 0) &
+        np.isfinite(errors) & (errors > 0) &
+        np.isfinite(lsf) & (lsf > 0) &
+        np.isfinite(wave)
+    )
     if len(rec) < 10:
         if return_plot_data:
             out = ([np.nan] * len(lines), [np.nan] * len(lines), [np.nan] * len(lines), np.nan, [np.nan] * len(
@@ -1129,7 +1146,7 @@ def parse_config(config_filename):
         if kw not in config['imaging']:
             config['imaging'][kw] = True
 
-    for kw in ['save_hist_dap', 'include_sky', 'partial_sky']:
+    for kw in ['save_hist_dap', 'include_sky', 'partial_sky', 'use_emission_spec']:
         if kw not in config['imaging']:
             config['imaging'][kw] = False
 
@@ -1140,6 +1157,9 @@ def parse_config(config_filename):
         config['dap_fitting'] = {'override_config': True}
     if config['dap_fitting'].get('override_config') is None:
         config['dap_fitting']['override_config'] = True
+    for kw in ['create_dap_output', 'create_emis_extension']:
+        if config['dap_fitting'].get(kw) is None:
+            config['dap_fitting'][kw] = True
 
     for cur_obj in config['object']:
         for cur_pointing in cur_obj['pointing']:
@@ -2135,7 +2155,7 @@ def reduce_parallel(exp_pairs):
             add_weights = f"--sky-weights {weights[0]} {weights[1]}"
         else:
             add_weights = ""
-        os.system(f"drp run -m {mjd} -e {exp} {add_weights}")# >/dev/null 2>&1") #-2d -1d
+        os.system(f"drp run -m {mjd} -e {exp} {add_weights} -2d -1d")# >/dev/null 2>&1") #-2d -1d
         # os.system(f"drp run --no-sci --with-cals -m 60291 -e {exp}")
     except Exception as e:
         log.error(f"Something wrong with data reduction: {e}")
@@ -3323,20 +3343,6 @@ def analyse_spectra(table_fluxes=None, mean_bounds=mean_bounds_fitline,
                          table_fluxes['vhel_corr'], table_fluxes['bgr'], np.arange(len(table_fluxes)))
 
     if len(line_quicksum_params) > 0:
-        ### Mom0 calculations
-        # for param in tqdm(params,ascii=True, desc="Calculate moment0 in all RSS",
-        #             total=len(table_fluxes), ):
-        #         status, res, spec_id = quickflux_all_lines(param,
-        #                         line_params=line_quicksum_params,
-        #                         include_sky=config['imaging'].get('include_sky'),
-        #                         partial_sky=config['imaging'].get('partial_sky'),
-        #                         path_to_fits=cur_wdir, velocity=sysvel,
-        #                         single_rss=single_rss, header=header
-        #                         )
-        #
-        #         statuses.append(status)
-        #         if not status:
-        #             continue
         with mp.Pool(processes=nprocs) as pool:
             for status, res, spec_id in tqdm(
                     pool.imap(
@@ -3948,12 +3954,13 @@ def fit_all_from_current_spec(params, header=None, path_to_fits=None, include_sk
         else:
             vhel = float(np.nanmean(vhel_corr))
         wave = ((np.arange(header['NAXIS1']) - header['CRPIX1'] + 1) * header['CDELT1'] + header['CRVAL1'])
-    error = 1./np.sqrt(ivar)
-    error[~np.isfinite(error)] = 1e10
+    error = 1. / np.sqrt(ivar)
+    # Guard against ivar==inf (error==0) and other invalid uncertainties.
+    error[~np.isfinite(error) | (error <= 0)] = 1e10
 
     if sky is not None and np.isfinite(sky).any():
         sky_error = 1. / np.sqrt(sky_ivar)
-        sky_error[~np.isfinite(sky_error)] = 1e10
+        sky_error[~np.isfinite(sky_error) | (sky_error <= 0)] = 1e10
 
     res_output = {}
     all_plot_data = []
@@ -4138,6 +4145,220 @@ def convert_extracted_spec_format(f_rss_in, f_rss_out, ds9_file=None):
     fix_permission(f_rss_out)
 
 
+DAP_MODEL_PLANE = 'model_spec'
+
+
+def dap_model_plane_index(hdu, plane_name=DAP_MODEL_PLANE):
+    for plane_id in range(hdu.data.shape[0]):
+        if hdu.header.get(f'NAME{plane_id}', '') == plane_name:
+            return plane_id
+    log.warning(f"DAP plane '{plane_name}' not found; using plane 1")
+    return 1
+
+
+def find_dap_sidecar(label, dap_output_dir, f_rss, suffix):
+    search_dirs = [dap_output_dir, os.path.dirname(f_rss)]
+    for search_dir in search_dirs:
+        if not search_dir:
+            continue
+        candidate = os.path.join(search_dir, f"{label}.{suffix}")
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def fiberid_from_dap_pt_id(pt_id):
+    """Parse fiberid from DAP PT id string (format 'exposure.fiberid')."""
+    return int(str(pt_id).split('.')[-1])
+
+
+def match_dap_model_to_rss(rss_flux, dap_output_path, slitmap, dap_table_path, plane_name=DAP_MODEL_PLANE):
+    """Map DAP model spectra to RSS rows using PT.id from the DAP table file.
+
+    Spectra in output.fits.gz are in the same order as rows in dap.fits.gz PT.
+    Each PT id ('exposure.fiberid') is matched to SLITMAP['fiberid'] in the RSS.
+    """
+    if not dap_table_path or not os.path.isfile(dap_table_path):
+        raise FileNotFoundError(f"DAP table file is required for fiber matching: {dap_table_path}")
+    if not dap_output_path or not os.path.isfile(dap_output_path):
+        raise FileNotFoundError(f"DAP output file is required: {dap_output_path}")
+
+    with fits.open(dap_output_path) as dap_hdu:
+        dap_primary = dap_hdu[0]
+        plane_id = dap_model_plane_index(dap_primary, plane_name=plane_name)
+        dap_model = np.array(dap_primary.data[plane_id], dtype=float, copy=True)
+
+    n_rss, n_wave = rss_flux.shape
+    model_full = np.full((n_rss, n_wave), np.nan, dtype=float)
+
+    with fits.open(dap_table_path) as dap_hdu:
+        pt = Table(dap_hdu['PT'].data)
+
+    if 'id' not in pt.colnames:
+        raise ValueError(f"DAP PT table in {dap_table_path} has no 'id' column")
+
+    if len(pt) != dap_model.shape[0]:
+        raise ValueError(
+            f"DAP PT has {len(pt)} rows but output model has {dap_model.shape[0]} spectra "
+            f"in {dap_table_path}"
+        )
+
+    slitmap_fiberids = np.asarray(slitmap['fiberid'])
+    for dap_row, pt_id in enumerate(pt['id']):
+        fiberid = fiberid_from_dap_pt_id(pt_id)
+        rss_rows = np.flatnonzero(slitmap_fiberids == fiberid)
+        if len(rss_rows) == 0:
+            log.warning(f"DAP PT id {pt_id} (fiberid {fiberid}) not found in RSS SLITMAP")
+            continue
+        if len(rss_rows) > 1:
+            log.warning(f"DAP PT id {pt_id} (fiberid {fiberid}) matches multiple RSS rows; using the first")
+        model_full[rss_rows[0], :] = dap_model[dap_row, :]
+
+    if not np.any(np.isfinite(model_full)):
+        raise ValueError("No DAP model spectra could be matched to RSS fibers")
+
+    return model_full
+
+
+def add_flux_emis_extension(f_rss, dap_output_path, dap_table_path, plane_name=DAP_MODEL_PLANE):
+    """Subtract DAP model spectrum and write FLUX_EMIS extension to the RSS file."""
+    if not os.path.isfile(dap_output_path):
+        log.error(f"DAP output file not found: {dap_output_path}")
+        return False
+    if not os.path.isfile(f_rss):
+        log.error(f"RSS file not found: {f_rss}")
+        return False
+    if not dap_table_path or not os.path.isfile(dap_table_path):
+        log.error(f"DAP table file not found: {dap_table_path}")
+        return False
+
+    rss = fits.open(f_rss, mode='update')
+    try:
+        rss_flux = rss['FLUX'].data.astype(float)
+        slitmap = Table(rss['SLITMAP'].data)
+        model_full = match_dap_model_to_rss(
+            rss_flux=rss_flux, dap_output_path=dap_output_path, slitmap=slitmap,
+            dap_table_path=dap_table_path, plane_name=plane_name,
+        )
+        flux_emis = rss_flux - model_full
+        if 'MASK' in rss:
+            flux_emis[rss['MASK'].data > 0] = np.nan
+        flux_emis[~np.isfinite(rss_flux) | (rss_flux == 0)] = np.nan
+
+        if 'FLUX_EMIS' in rss:
+            rss['FLUX_EMIS'].data = flux_emis.astype(np.float32)
+        else:
+            rss.append(fits.ImageHDU(data=flux_emis.astype(np.float32), header=rss['FLUX'].header.copy(),
+                                     name='FLUX_EMIS'))
+        rss.flush()
+        log.info(f"Wrote FLUX_EMIS extension to {os.path.basename(f_rss)} using "
+                 f"{os.path.basename(dap_output_path)} plane={plane_name}")
+    except Exception as e:
+        log.error(f"Failed to create FLUX_EMIS extension for {f_rss}: {e}")
+        return False
+    finally:
+        rss.close()
+    fix_permission(f_rss)
+    return True
+
+
+def rss_flux_extension_name(config, rss):
+    if config['imaging'].get('use_emission_spec') and ('FLUX_EMIS' in rss):
+        return 'FLUX_EMIS'
+    return 'FLUX'
+
+
+def select_science_flux_from_rss(rss, config):
+    """Return science flux array for line fitting / moment0, honoring use_emission_spec."""
+    flux_ext = rss_flux_extension_name(config, rss)
+    if ('FLUX_SKYCORR' in rss) and config['imaging'].get('partial_sky') and flux_ext == 'FLUX':
+        flux = rss['FLUX_SKYCORR'].data.copy()
+        flux[flux == 0] = np.nan
+    elif config['imaging'].get('include_sky'):
+        flux = rss[flux_ext].data + rss['SKY'].data
+        flux[~np.isfinite(rss[flux_ext].data) | (rss[flux_ext].data == 0)] = np.nan
+    else:
+        flux = rss[flux_ext].data.copy()
+        flux[flux == 0] = np.nan
+    if 'MASK' in rss:
+        flux[(rss['MASK'].data > 0)] = np.nan
+    return flux
+
+
+def get_single_rss_paths(config, output_dir, cur_obj, binned=False, extracted=False, testdap_prefix=None):
+    if testdap_prefix is None:
+        testdap_prefix = ""
+    if not cur_obj.get('version'):
+        version = ''
+    else:
+        version = cur_obj.get('version')
+    if binned:
+        suffix_out = config['binning'].get('rss_output_suffix')
+        if not suffix_out:
+            suffix_out = '_binned_rss.fits'
+        bin_line = config['binning'].get('line')
+        if not bin_line:
+            bin_line = 'Ha'
+        target_sn = config['binning'].get('target_sn')
+        if not target_sn:
+            target_sn = 30.
+        else:
+            target_sn = float(target_sn)
+        f_rss = os.path.join(output_dir, cur_obj['name'], version,
+                             f"{cur_obj.get('name')}_{bin_line}_sn{target_sn}{suffix_out}")
+        dap_output_dir = os.path.join(output_dir, cur_obj['name'], version,
+                                      f"dap_output_binfluxes_{bin_line}_sn{target_sn}")
+    elif extracted:
+        if 'extraction' not in config:
+            suffix_out = '_extracted.fits'
+        else:
+            suffix_out = config['extraction'].get('file_output_suffix')
+            if not suffix_out:
+                suffix_out = '_extracted.fits'
+        f_rss = os.path.join(output_dir, cur_obj['name'], version,
+                             f"{cur_obj.get('name')}{suffix_out}")
+        dap_output_dir = os.path.join(output_dir, cur_obj['name'], version, "dap_output_extracted")
+    else:
+        f_rss = os.path.join(output_dir, cur_obj['name'], version,
+                             f"{testdap_prefix}{cur_obj['name']}_all_RSS.fits")
+        dap_output_dir = os.path.join(output_dir, cur_obj['name'], version, "dap_output")
+    label = os.path.basename(f_rss).replace('.fits', '').replace(testdap_prefix, '')
+    return f_rss, dap_output_dir, label
+
+
+def process_flux_emis_extensions(config, output_dir=None, fit_mode='rss', testdap_prefix=None):
+    if not config['dap_fitting'].get('create_emis_extension', True):
+        return True
+    if output_dir is None:
+        output_dir = config.get('default_output_dir')
+    statuses = []
+    for cur_obj in config['object']:
+        f_rss, dap_output_dir, label = get_single_rss_paths(
+            config, output_dir, cur_obj,
+            binned=(fit_mode == 'binned'),
+            extracted=(fit_mode == 'extracted'),
+            testdap_prefix=testdap_prefix,
+        )
+        if not os.path.isfile(f_rss):
+            log.error(f"File {f_rss} doesn't exist.")
+            statuses.append(False)
+            continue
+        dap_output_path = find_dap_sidecar(label, dap_output_dir, f_rss, 'output.fits.gz')
+        dap_table_path = find_dap_sidecar(label, dap_output_dir, f_rss, 'dap.fits.gz')
+        if dap_output_path is None:
+            log.warning(f"DAP output file for {os.path.basename(f_rss)} not found; "
+                        f"skip creating FLUX_EMIS extension")
+            statuses.append(False)
+            continue
+        if dap_table_path is None:
+            log.warning(f"DAP table file for {os.path.basename(f_rss)} not found; "
+                        f"skip creating FLUX_EMIS extension")
+            statuses.append(False)
+            continue
+        statuses.append(add_flux_emis_extension(f_rss, dap_output_path, dap_table_path))
+    return np.all(statuses)
+
+
 def process_single_rss(config, output_dir=None, binned=False, dap=False, extracted=False, testdap_prefix=None):
     """
     Create table with fluxes from a single rss file
@@ -4219,9 +4440,21 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             if testdap_prefix != "":
                 label = label.replace(testdap_prefix, "")
 
-            if os.path.isdir(dap_output_dir) and os.path.exists(os.path.join(dap_output_dir, f'm_{label}.output.fits')):
-                log.warning("DAP results already exist. Skipping DAP running. "
+            if os.path.isdir(dap_output_dir) and (
+                    os.path.exists(os.path.join(dap_output_dir, f'm_{label}.output.fits'))
+                    # or os.path.exists(os.path.join(dap_output_dir, f'{label}.output.fits.gz'))
+                    # or os.path.isfile(find_dap_sidecar(label, dap_output_dir, f_rss, 'output.fits.gz'))
+            ):
+                log.warning(f"DAP results already exist: {dap_output_dir}. Skipping DAP running. "
                             "Remove the directory to rerun DAP, if necessary.")
+                # if config['dap_fitting'].get('create_emis_extension', True):
+                #     dap_output_path = find_dap_sidecar(label, dap_output_dir, f_rss, 'output.fits.gz')
+                #     dap_table_path = find_dap_sidecar(label, dap_output_dir, f_rss, 'dap.fits.gz')
+                #     if dap_output_path is not None and dap_table_path is not None:
+                #         add_flux_emis_extension(f_rss, dap_output_path, dap_table_path)
+                #     else:
+                #         log.warning(f"DAP output or table file missing for {os.path.basename(f_rss)}; "
+                #                     f"FLUX_EMIS extension was not created")
                 statuses.append(True)
                 continue
             if not os.path.isdir(dap_output_dir):
@@ -4303,6 +4536,18 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
             os.chdir(os.environ.get('LVM_DAP'))
             try:
                 os.system(f"lvm-dap-conf {f_rss} {label} {dap_config_file}")
+                fdap_out = os.path.join(dap_output_dir, f"{label}.dap.fits.gz")
+                if config['dap_fitting'].get('create_dap_output', True):
+                    os.system(f"lvm-dap-gen-out-mod -output_path {dap_output_dir} {f_rss} {fdap_out} {label} {dap_config_file}")
+                if config['dap_fitting'].get('create_emis_extension', True):
+                    dap_output_path = find_dap_sidecar(label, dap_output_dir, f_rss, 'output.fits.gz')
+                    if dap_output_path is None and config['dap_fitting'].get('create_dap_output', True):
+                        dap_output_path = os.path.join(dap_output_dir, f"{label}.output.fits.gz")
+                    if dap_output_path is not None and os.path.isfile(dap_output_path) and os.path.isfile(fdap_out):
+                        add_flux_emis_extension(f_rss, dap_output_path, fdap_out)
+                    else:
+                        log.warning(f"DAP output or table file not found for {os.path.basename(f_rss)}; "
+                                    f"FLUX_EMIS extension was not created")
                 statuses.append(True)
             except Exception as e:
                 log.error(f"Something wrong with running DAP: {e}")
@@ -4342,15 +4587,13 @@ def process_single_rss(config, output_dir=None, binned=False, dap=False, extract
                 else:
                     table_fluxes = table_fibers['fiberid', 'fib_ra', 'fib_dec'].copy()
 
-            if ('FLUX_SKYCORR' in rss) and config['imaging'].get('partial_sky'):
-                flux = rss['FLUX_SKYCORR'].data
-                flux[flux == 0] = np.nan
-            elif config['imaging'].get('include_sky'):
-                flux = rss['FLUX'].data + rss['SKY'].data
-                flux[~np.isfinite(rss['FLUX'].data) | (rss['FLUX'].data == 0)] = np.nan
-            else:
-                flux = rss['FLUX'].data
-                flux[flux == 0] = np.nan
+            if config['imaging'].get('use_emission_spec'):
+                if 'FLUX_EMIS' in rss:
+                    log.info(f"Using FLUX_EMIS extension from {os.path.basename(f_rss)} for line analysis")
+                else:
+                    log.warning(f"use_emission_spec is true but FLUX_EMIS is missing in {os.path.basename(f_rss)}; "
+                                f"falling back to FLUX")
+            flux = select_science_flux_from_rss(rss, config)
             if 'SKY' in rss and np.nanmedian(rss['SKY'].data) != 0:
                 sky = rss['SKY'].data
                 sky_ivar = rss['SKY_IVAR'].data
@@ -4870,10 +5113,13 @@ def bin_rss(config, w_dir=None):
                              [cur_wdir] * len(in_reg), [{'masking': config.get('masking')}] * len(in_reg))
 
             if config['imaging'].get('use_single_rss_file'):
+                flux_ext = rss_flux_extension_name(config, hdu_single_rss)
+                if flux_ext == 'FLUX_EMIS':
+                    log.info(f"Using FLUX_EMIS extension from {os.path.basename(f_rss)} during binning")
                 res = []
                 for p in tqdm(params, ascii=True, desc=f"Extract spectra from fibers in {cur_bin_id+1}/{len(uniq_bins)} bins",
                                     total=len(in_reg)):
-                    res.append(extract_spectrum_for_cur_fiber(p, hdu=hdu_single_rss))
+                    res.append(extract_spectrum_for_cur_fiber(p, hdu=hdu_single_rss, flux_ext=flux_ext))
             else:
                 nprocs = np.min([np.max([config.get('nprocs'), 1]), len(in_reg)])
                 with mp.Pool(processes=nprocs) as pool:
@@ -4949,6 +5195,57 @@ def bin_rss(config, w_dir=None):
         hdu_out.writeto(f_out, overwrite=True)
         fix_permission(f_out)
     return np.all(statuses)
+
+
+def keep_mask_from_score(score):
+    score = np.asarray(score)
+    ok = np.isfinite(score)
+    med = np.nanmedian(score[ok])
+    mad = np.nanmedian(np.abs(score[ok] - med))
+    sigma = 1.4826 * mad
+    return ok & (score <= (med - 0.5* sigma))
+
+def weighted_median_spectrum(flux, w):
+    """
+    flux: (n_fibers, n_lambda)
+    w:    (n_fibers,)  nonnegative
+    returns median: (n_lambda,)
+    """
+    flux = np.asarray(flux)
+    w = np.asarray(w)
+    w2 = w[:, None]  # (n_fibers, 1)
+    # Handle NaNs by giving them zero weight and pushing them to the end
+    finite = np.isfinite(flux)
+    flux2 = np.where(finite, flux, np.inf)
+    w2 = np.where(finite, w2, 0.0)
+    order = np.argsort(flux2, axis=0)  # (n_fibers, n_lambda)
+    x_sorted = np.take_along_axis(flux2, order, axis=0)
+    w_sorted = np.take_along_axis(w2, order, axis=0)
+    cw = np.cumsum(w_sorted, axis=0)
+    half = 0.5 * cw[-1, :]  # (n_lambda,)
+    idx = (cw >= half).argmax(axis=0)  # first index where cw crosses half
+    med = x_sorted[idx, np.arange(flux.shape[1])]
+    # If a column had all-zero weight, median should be NaN
+    med = np.where(cw[-1, :] > 0, med, np.nan)
+    return med
+
+
+def median_spectrum_uncertainty_mc(flux, error, w, n_mc=50, seed=0, keep=None):
+    rng = np.random.default_rng(seed)
+    flux = np.squeeze(flux)
+    error = np.squeeze(error)
+    w = np.squeeze(w)
+    if keep is None:
+        keep = np.arange(flux.shape[0])
+    med0 = weighted_median_spectrum(flux[keep, :], w[keep])
+    med_draws = np.empty((n_mc, flux.shape[1]), dtype=float)
+    for i in range(n_mc):
+        draw = rng.normal(loc=flux[keep, :], scale=error[keep, :])
+        med_draws[i] = weighted_median_spectrum(draw, w[keep])
+    lo16 = np.nanpercentile(med_draws, 16, axis=0)
+    hi84 = np.nanpercentile(med_draws, 84, axis=0)
+    err_sym = 0.5 * (hi84 - lo16)
+    return med0, err_sym
 
 
 def extract_spectra_ds9(config, w_dir=None):
@@ -5201,10 +5498,24 @@ def extract_spectra_ds9(config, w_dir=None):
             fiber_weights_2d = np.tile(fiber_weights, (res.shape[2], 1)).T
             fiber_weights_2d[~weights_mask] = 0
 
-            flux = np.nansum(res[:,0,:] * fiber_weights[:, None], axis=0)/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
-            error = np.sqrt(np.nansum(res[:, 1, :]**2 * fiber_weights[:, None] ** 2, axis=0))/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
-            sky = np.nansum(res[:, 2, :] * fiber_weights[:, None], axis=0)/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
-            sky_error = np.sqrt(np.nanmean(res[:, 3, :] ** 2 * fiber_weights[:, None] ** 2, axis=0))/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
+            if "median" in cur_reg_name.lower():
+                log.warning(f"Compute median spectrum instead of mean for region '{cur_reg_name}'. "
+                         "Remove 'median' from its name if this is undesired. "
+                            "I will reject fibers from bright regions before proceeding."
+                            "Note: Computing errors can take some time, allow a few minutes...")
+                score = np.nanmean((np.abs(np.squeeze(res[:,0,:])) / np.squeeze(res[:,1,:])) > 10.0, axis=1)
+                keep = keep_mask_from_score(score)
+                log.info(f"{np.sum(keep)} of {res.shape[0]} fibers kept for median calculations")
+                flux, error = median_spectrum_uncertainty_mc(res[:,0,:], res[:,1,:], fiber_weights, n_mc=20,
+                                                             keep=keep)
+                log.info("Done with FLUX, now processing SKY spectrum...")
+                sky, sky_error = median_spectrum_uncertainty_mc(res[:, 2, :], res[:, 3, :], fiber_weights, n_mc=20,
+                                                                keep=keep)
+            else:
+                flux = np.nansum(res[:,0,:] * fiber_weights[:, None], axis=0)/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
+                error = np.sqrt(np.nansum(res[:, 1, :]**2 * fiber_weights[:, None] ** 2, axis=0))/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
+                sky = np.nansum(res[:, 2, :] * fiber_weights[:, None], axis=0)/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
+                sky_error = np.sqrt(np.nanmean(res[:, 3, :] ** 2 * fiber_weights[:, None] ** 2, axis=0))/np.nansum(fiber_weights_2d, axis=0)#/np.pi/(fiber_d**2/4))
             cur_lsf = np.nanmean(res[:, 5, :], axis=0)
 
             rss_out['FLUX'].data[cur_reg_id-empty_reg, :] = np.float32(flux)
@@ -5248,7 +5559,7 @@ def extract_spectra_ds9(config, w_dir=None):
     return np.all(statuses)
 
 
-def extract_spectrum_for_cur_fiber(params, hdu=None):
+def extract_spectrum_for_cur_fiber(params, hdu=None, flux_ext='FLUX'):
 
     (source_ids, flux_cors_b, flux_cors_r, flux_cors_z, vhel_corrs, corr_vel_line,
      velocity, include_sky, partial_sky, path_to_fits, masking) = params
@@ -5286,12 +5597,12 @@ def extract_spectrum_for_cur_fiber(params, hdu=None):
             sky_ivar = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
             lsf = np.zeros(shape=(len(source_ids), hdu['FLUX'].header['NAXIS1']), dtype=float)
         if partial_sky:
-            flux[ind, :] = ((hdu['FLUX'].data[fib_id, :] + hdu['SKY'].data[fib_id, :]) -
+            flux[ind, :] = ((hdu[flux_ext].data[fib_id, :] + hdu['SKY'].data[fib_id, :]) -
                             mask_sky_at_bright_lines(hdu['SKY'].data[fib_id, :], wave=wl_grid,
                                                         vel=velocity, mask=hdu['MASK'].data[fib_id, :]))
         else:
             flux_corr = float(np.nanmean([float(flux_cors_b[ind]), float(flux_cors_r[ind]),float(flux_cors_z[ind])]) )
-            flux[ind, :] = (hdu['FLUX'].data[fib_id, :]) * flux_corr #  + hdu['MODEL_CONT'].data[fib_id, :]
+            flux[ind, :] = (hdu[flux_ext].data[fib_id, :]) * flux_corr #  + hdu['MODEL_CONT'].data[fib_id, :]
 
         ivar[ind, :] = hdu['IVAR'].data[fib_id, :] / flux_corr ** 2
         if 'SKY' in hdu:
